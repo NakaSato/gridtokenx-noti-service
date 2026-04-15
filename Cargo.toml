@@ -6,7 +6,7 @@ members = [
     "crates/noti-persistence",
     "crates/noti-logic",
     "crates/noti-api",
-    "crates/noti-server",
+    "bin/noti-server",
 ]
 
 [workspace.package]

@@ -308,6 +308,8 @@ When reviewing a user's structure, check for these failure modes:
 
 - **Cyclic crate dependencies** — won't compile but the user may try anyway
 - **A `utils` or `common` crate that everything depends on** — usually means the layering is wrong
+- **Non-dyn-compatible traits used for DI** — generic methods in traits (e.g. `fn get<T>`) prevent the use of `Arc<dyn Trait>`, which is the backbone of modular monolith dependency injection. Use `serde_json::Value` or type erasure instead.
+- **Orphan Rule violations in Persistence layers** — trying to implement external traits (like `sqlx::FromRow`) for domain types defined in a different crate (e.g. `core`). Always define a local mapper struct (e.g. `UserRow`) in the infrastructure crate.
 - **Domain types in a `shared` crate across services** — recreates the monolith
 - **`pub` everywhere by default** — locks in API contracts that will hurt later
 - **Async in pure logic crates** — makes testing harder for no benefit

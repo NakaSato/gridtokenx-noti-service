@@ -1,0 +1,72 @@
+# -----------------------------------------------------------------------------
+# Stage 1: Builder
+# -----------------------------------------------------------------------------
+FROM rust:1.88-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    cmake \
+    clang \
+    git \
+    curl \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the workspace manifest and lockfile
+COPY gridtokenx-noti-service/Cargo.toml ./
+COPY gridtokenx-noti-service/Cargo.lock ./
+
+# Copy all workspace members
+COPY gridtokenx-noti-service/crates crates/
+COPY gridtokenx-noti-service/bin bin/
+COPY gridtokenx-noti-service/proto proto/
+
+# Build in release mode
+# Note: we use --bin noti-server which is defined in crates/noti-server
+RUN cargo build --release --bin noti-server
+
+# Strip binary to reduce size
+RUN strip /app/target/release/noti-server
+
+# -----------------------------------------------------------------------------
+# Stage 2: Runtime
+# -----------------------------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    tzdata \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -g 1000 appgroup && \
+    useradd -u 1000 -g appgroup -s /bin/sh appuser
+
+WORKDIR /app
+
+# Copy binary from builder stage
+COPY --from=builder /app/target/release/noti-server /app/noti-server
+
+# Copy assets
+COPY gridtokenx-noti-service/templates /app/templates
+COPY gridtokenx-noti-service/migrations /app/migrations
+
+# Set permissions
+RUN chown -R appuser:appgroup /app
+
+USER appuser
+
+# Expose ports (HTTP: 8080, gRPC: 8090)
+# These match the PORT and internal gRPC listener in startup.rs
+EXPOSE 8080 8090
+
+# Run the binary
+ENTRYPOINT ["/app/noti-server"]

@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use noti_core::domain::{Notification, NotificationStatus};
+use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
 use noti_core::error::Result;
 use noti_core::traits::NotificationRepositoryTrait;
 

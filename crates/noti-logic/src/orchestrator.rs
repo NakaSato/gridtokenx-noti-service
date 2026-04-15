@@ -225,3 +225,93 @@ impl NotificationOrchestrator {
         self.repo.get_by_id(id).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use noti_core::domain::NotificationChannel;
+    use serde_json::json;
+
+    struct MockRepo {
+        saved: Mutex<Vec<Notification>>,
+    }
+    #[async_trait::async_trait]
+    impl NotificationRepositoryTrait for MockRepo {
+        async fn create(&self, n: &Notification) -> Result<()> {
+            self.saved.lock().unwrap().push(n.clone());
+            Ok(())
+        }
+        async fn get_by_id(&self, _id: Uuid) -> Result<Option<Notification>> { Ok(None) }
+        async fn get_by_idempotency_key(&self, _key: &str) -> Result<Option<Notification>> { Ok(None) }
+        async fn update_status(&self, _id: Uuid, _status: NotificationStatus, _error: Option<String>, _provider_ref: Option<String>) -> Result<()> { Ok(()) }
+        async fn increment_retry(&self, _id: Uuid, _next: chrono::DateTime<chrono::Utc>) -> Result<()> { Ok(()) }
+        async fn get_pending_for_retry(&self, _limit: i32) -> Result<Vec<Notification>> { Ok(vec![]) }
+    }
+
+    struct MockCache;
+    #[async_trait::async_trait]
+    impl CacheTrait for MockCache {
+        async fn set_value(&self, _k: &str, _v: serde_json::Value, _t: u64) -> Result<()> { Ok(()) }
+        async fn get_value(&self, _k: &str) -> Result<Option<serde_json::Value>> { Ok(None) }
+        async fn increment_with_ttl(&self, _k: &str, _t: u64) -> Result<i64> { Ok(1) }
+        async fn delete(&self, _k: &str) -> Result<()> { Ok(()) }
+    }
+
+    struct MockTemplate;
+    impl TemplateEngineTrait for MockTemplate {
+        fn render(&self, _i: &str, _v: &serde_json::Value) -> Result<String> { Ok("body".to_string()) }
+    }
+
+    struct MockProvider;
+    #[async_trait::async_trait]
+    impl NotificationProviderTrait for MockProvider {
+        async fn send(&self, _r: &str, _b: &str) -> Result<String> { Ok("ref".to_string()) }
+        fn provider_id(&self) -> &'static str { "mock" }
+    }
+
+    struct MockMq;
+    #[async_trait::async_trait]
+    impl MessageQueueTrait for MockMq {
+        async fn publish_dispatch(&self, _id: Uuid) -> Result<()> { Ok(()) }
+        async fn publish_retry(&self, _id: Uuid, _d: u32) -> Result<()> { Ok(()) }
+    }
+
+    #[tokio::test]
+    async fn test_queue_notification() {
+        let repo = Arc::new(MockRepo { saved: Mutex::new(vec![]) });
+        let cache = Arc::new(MockCache);
+        let template = Arc::new(MockTemplate);
+        let p_email = Arc::new(MockProvider);
+        let p_sms = Arc::new(MockProvider);
+        let p_push = Arc::new(MockProvider);
+        let p_web = Arc::new(MockProvider);
+        let p_ws = Arc::new(MockProvider);
+        let mq = Arc::new(MockMq);
+
+        let orchestrator = Arc::new(NotificationOrchestrator::new(
+            repo.clone(),
+            template,
+            p_email,
+            p_sms,
+            p_push,
+            p_web,
+            p_ws,
+            cache,
+            Some(mq),
+        ));
+
+        let id = orchestrator.queue_notification(
+            None,
+            NotificationChannel::Email,
+            "test@example.com".to_string(),
+            "welcome".to_string(),
+            json!({}),
+            None,
+        ).await.unwrap();
+
+        let saved = repo.saved.lock().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, id);
+    }
+}
