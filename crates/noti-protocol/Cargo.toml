@@ -1,0 +1,24 @@
+[package]
+name = "noti-protocol"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+connectrpc.workspace = true
+prost.workspace = true
+tonic.workspace = true
+buffa.workspace = true
+buffa-types.workspace = true
+http.workspace = true
+http-body.workspace = true
+futures.workspace = true
+
+[build-dependencies]
+connectrpc-build.workspace = true
+buffa-build.workspace = true
+prost-build.workspace = true
+tonic-build.workspace = true

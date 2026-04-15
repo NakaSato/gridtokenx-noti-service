@@ -1,0 +1,50 @@
+[package]
+name = "noti-server"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "noti-server"
+path = "src/main.rs"
+
+[dependencies]
+noti-core.workspace = true
+noti-protocol.workspace = true
+noti-persistence.workspace = true
+noti-logic.workspace = true
+noti-api.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+futures.workspace = true
+
+sqlx.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dotenvy.workspace = true
+
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+connectrpc.workspace = true
+http.workspace = true
+
+# Messaging (for consumer loops)
+rdkafka.workspace = true
+lapin.workspace = true
+
+serde_json.workspace = true
+
+# HTTP/3 & QUIC
+quinn.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+h3-axum.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "noti-persistence"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+noti-core.workspace = true
+
+sqlx.workspace = true
+redis.workspace = true
+rdkafka.workspace = true
+lapin.workspace = true
+tera.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+tracing.workspace = true
+anyhow.workspace = true

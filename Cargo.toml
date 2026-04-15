@@ -1,0 +1,116 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/noti-core",
+    "crates/noti-protocol",
+    "crates/noti-persistence",
+    "crates/noti-logic",
+    "crates/noti-api",
+    "crates/noti-server",
+]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2024"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+
+[workspace.dependencies]
+# Internal Crates
+noti-core = { path = "crates/noti-core" }
+noti-protocol = { path = "crates/noti-protocol" }
+noti-persistence = { path = "crates/noti-persistence" }
+noti-logic = { path = "crates/noti-logic" }
+noti-api = { path = "crates/noti-api" }
+
+# Async Runtime
+tokio = { version = "1.48", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "time",
+    "sync",
+    "signal",
+    "parking_lot",
+] }
+tokio-util = "0.7.18"
+futures = "0.3"
+
+# Web Framework
+axum = { version = "0.8.7", features = ["macros"] }
+tower = { version = "0.5.2", features = ["full"] }
+tower-http = { version = "0.6.1", features = ["full"] }
+
+# Database
+sqlx = { version = "0.8", features = [
+    "macros",
+    "postgres",
+    "runtime-tokio-rustls",
+    "chrono",
+    "uuid",
+    "rust_decimal",
+    "migrate",
+] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time & Identity
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "v5", "serde"] }
+
+# Errors & Logging
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = "0.17"
+
+# Config
+config = "0.15.19"
+dotenvy = "0.15"
+
+# Async Traits
+async-trait = "0.1"
+
+# Messaging
+rdkafka = { version = "0.37", features = ["zstd"] }
+lapin = "2.5"
+
+# Cache
+redis = { version = "0.32", features = ["tokio-comp", "connection-manager"] }
+
+# gRPC / ConnectRPC
+connectrpc = { version = "0.2.1", features = ["axum", "server", "client"] }
+prost = "0.13"
+tonic = { version = "0.12.3", features = ["tls-native-roots"] }
+buffa = "0.2.0"
+buffa-types = "0.2.0"
+http-body = "1.0.0"
+http = "1.0.0"
+
+# HTTP/3 & QUIC
+quinn = { version = "0.11", features = ["rustls"] }
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+h3-axum = "0.2.0"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2.0"
+
+# Templating
+tera = "1.20"
+
+# Build dependencies
+buffa-build = "0.2.0"
+connectrpc-build = "0.2.0"
+prost-build = "0.13"
+tonic-build = "0.12.3"
