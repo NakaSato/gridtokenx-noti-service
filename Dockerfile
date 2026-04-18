@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Builder
 # -----------------------------------------------------------------------------
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.89-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -17,21 +17,17 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy the workspace manifest and lockfile
-COPY gridtokenx-noti-service/Cargo.toml ./
-COPY gridtokenx-noti-service/Cargo.lock ./
+# Copy the whole project to maintain structure for sqlx migrations
+COPY gridtokenx-noti-service/ gridtokenx-noti-service/
 
-# Copy all workspace members
-COPY gridtokenx-noti-service/crates crates/
-COPY gridtokenx-noti-service/bin bin/
-COPY gridtokenx-noti-service/proto proto/
+WORKDIR /app/gridtokenx-noti-service
 
 # Build in release mode
 # Note: we use --bin noti-server which is defined in crates/noti-server
 RUN cargo build --release --bin noti-server
 
 # Strip binary to reduce size
-RUN strip /app/target/release/noti-server
+RUN strip target/release/noti-server
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime
@@ -53,11 +49,11 @@ RUN groupadd -g 1000 appgroup && \
 WORKDIR /app
 
 # Copy binary from builder stage
-COPY --from=builder /app/target/release/noti-server /app/noti-server
+COPY --from=builder /app/gridtokenx-noti-service/target/release/noti-server /app/noti-server
 
 # Copy assets
-COPY gridtokenx-noti-service/templates /app/templates
-COPY gridtokenx-noti-service/migrations /app/migrations
+COPY --from=builder /app/gridtokenx-noti-service/templates /app/templates
+COPY --from=builder /app/gridtokenx-noti-service/migrations /app/migrations
 
 # Set permissions
 RUN chown -R appuser:appgroup /app
@@ -65,7 +61,6 @@ RUN chown -R appuser:appgroup /app
 USER appuser
 
 # Expose ports (HTTP: 8080, gRPC: 8090)
-# These match the PORT and internal gRPC listener in startup.rs
 EXPOSE 8080 8090
 
 # Run the binary
