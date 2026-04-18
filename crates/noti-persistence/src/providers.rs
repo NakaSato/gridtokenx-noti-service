@@ -1,5 +1,8 @@
 //! Notification delivery providers implementing `NotificationProviderTrait`.
 
+pub mod smtp;
+pub mod websocket;
+
 use async_trait::async_trait;
 use tracing::info;
 use uuid::Uuid;

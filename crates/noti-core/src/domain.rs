@@ -18,7 +18,7 @@ pub enum NotificationChannel {
 
 /// Lifecycle status of a notification.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
-#[sqlx(type_name = "notification_status", rename_all = "lowercase")]
+#[sqlx(type_name = "notification_status", rename_all = "snake_case")]
 pub enum NotificationStatus {
     Pending,
     Processing,

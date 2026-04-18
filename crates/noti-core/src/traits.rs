@@ -44,6 +44,13 @@ pub trait NotificationProviderTrait: Send + Sync {
     fn provider_id(&self) -> &'static str;
 }
 
+/// Registry for active WebSocket connections.
+#[async_trait]
+pub trait WebSocketRegistryTrait: Send + Sync {
+    /// Send a message to a specific user via WebSocket.
+    async fn send_to_user(&self, user_id: &uuid::Uuid, message: &str) -> Result<bool>;
+}
+
 // ---------------------------------------------------------------------------
 // Cache
 // ---------------------------------------------------------------------------

@@ -23,8 +23,7 @@ use noti_core::traits::{
 use noti_logic::NotificationOrchestrator;
 use noti_persistence::cache::CacheService;
 use noti_persistence::providers::{
-    MockEmailProvider, MockPushProvider, MockSmsProvider, MockWebSocketProvider,
-    MockWebhookProvider,
+    MockEmailProvider, MockPushProvider, MockSmsProvider, MockWebhookProvider,
 };
 use noti_persistence::repository::NotificationRepository;
 use noti_persistence::templating::TemplateEngine;
@@ -82,11 +81,30 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         TemplateEngine::new("templates").context("Failed to initialize template engine")?,
     );
 
-    let email_provider: Arc<dyn NotificationProviderTrait> = Arc::new(MockEmailProvider);
+    // WebSocket management
+    let ws_manager = Arc::new(noti_api::websocket::ConnectionManager::new());
+    let ws_registry: Arc<dyn noti_core::traits::WebSocketRegistryTrait> = ws_manager.clone();
+
+    let email_provider: Arc<dyn NotificationProviderTrait> = if let Some(host) = config.smtp_host.as_ref() {
+        info!("📧 Configuring real SMTP provider for {}", host);
+        Arc::new(noti_persistence::providers::smtp::SmtpProvider::new(
+            host,
+            config.smtp_port.unwrap_or(587),
+            config.smtp_user.clone(),
+            config.smtp_pass.clone(),
+            config.smtp_from.clone().unwrap_or_else(|| "no-reply@gridtokenx.com".to_string()),
+        ))
+    } else {
+        tracing::warn!("⚠️ No SMTP host configured, using MockEmailProvider");
+        Arc::new(MockEmailProvider)
+    };
+
     let sms_provider: Arc<dyn NotificationProviderTrait> = Arc::new(MockSmsProvider);
     let push_provider: Arc<dyn NotificationProviderTrait> = Arc::new(MockPushProvider);
     let webhook_provider: Arc<dyn NotificationProviderTrait> = Arc::new(MockWebhookProvider);
-    let websocket_provider: Arc<dyn NotificationProviderTrait> = Arc::new(MockWebSocketProvider);
+    let websocket_provider: Arc<dyn NotificationProviderTrait> = Arc::new(
+        noti_persistence::providers::websocket::WebSocketProvider::new(ws_registry)
+    );
 
     // Optional RabbitMQ
     let mq_client = if !config.rabbitmq_url.is_empty() {
@@ -163,6 +181,13 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     router = Arc::new(grpc_service).register(router);
 
     let axum_router = router.into_axum_router();
+    
+    // Add WebSocket and Health routes
+    let axum_router = axum_router
+        .route("/ws", axum::routing::get(noti_api::websocket::ws_handler))
+        .route("/health", axum::routing::get(noti_api::handlers::health_check))
+        .route("/health/live", axum::routing::get(noti_api::handlers::health_live))
+        .layer(axum::Extension(ws_manager));
 
     // Add Alt-Svc header for HTTP/3 advertisement
     let axum_router = axum_router.layer(
@@ -323,17 +348,12 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     // -----------------------------------------------------------------------
     // 6. Wait for shutdown
     // -----------------------------------------------------------------------
-    tokio::select! {
-        _ = tcp_handle => {
-            info!("TCP handler finished");
-        }
-        _ = h3_handle => {
-            info!("H3 handler finished");
-        }
-        _ = token.cancelled() => {
-            info!("Service cancellation received");
-        }
-    }
+    token.cancelled().await;
+    info!("Service cancellation received");
+    
+    // Cleanup
+    let _ = tcp_handle.abort();
+    let _ = h3_handle.abort();
 
     Ok(())
 }

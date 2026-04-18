@@ -14,6 +14,7 @@ redis.workspace = true
 rdkafka.workspace = true
 lapin.workspace = true
 tera.workspace = true
+lettre.workspace = true
 
 tokio.workspace = true
 tokio-util.workspace = true

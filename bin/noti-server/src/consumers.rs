@@ -14,6 +14,7 @@ use rdkafka::message::{BorrowedMessage, Message};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use noti_core::domain::NotificationChannel;
 use noti_logic::NotificationOrchestrator;
@@ -99,8 +100,67 @@ async fn handle_kafka_message(
                     .map_err(|e| anyhow::anyhow!(e))?;
             }
         }
-        "TradeSettled" => {
-            // Handle trade settled notification
+        "OrderMatched" => {
+            let buyer_id = event["data"]["buyer_id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            let seller_id = event["data"]["seller_id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            let amount = &event["data"]["amount"];
+            let price = &event["data"]["price"];
+
+            // Notify buyer
+            if let Some(uid) = buyer_id {
+                orchestrator
+                    .queue_notification(
+                        Some(uid),
+                        NotificationChannel::WebSocket,
+                        uid.to_string(),
+                        "trade_matched.txt.tera".to_string(),
+                        serde_json::json!({ "role": "buyer", "amount": amount, "price": price }),
+                        Some(format!("kafka:matched:buy:{}", msg.offset())),
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+
+            // Notify seller
+            if let Some(uid) = seller_id {
+                orchestrator
+                    .queue_notification(
+                        Some(uid),
+                        NotificationChannel::WebSocket,
+                        uid.to_string(),
+                        "trade_matched.txt.tera".to_string(),
+                        serde_json::json!({ "role": "seller", "amount": amount, "price": price }),
+                        Some(format!("kafka:matched:sell:{}", msg.offset())),
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+        }
+        "SettlementProcessed" => {
+            let status = event["data"]["status"].as_str().unwrap_or("unknown");
+            let tx_sig = event["data"]["tx_signature"].as_str().unwrap_or("");
+
+            // This usually goes to the involved parties, but we need their user_ids.
+            // For now, logged as a system notification or specific user message if available.
+            info!("Settlement {} processed with status: {}", tx_sig, status);
+        }
+        "ErcIssued" => {
+            let user_id = event["data"]["user_id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            let amount = &event["data"]["energy_amount"];
+
+            if let Some(uid) = user_id {
+                orchestrator
+                    .queue_notification(
+                        Some(uid),
+                        NotificationChannel::Email, // Certificates often go to email
+                        "user@example.com".to_string(), // In reality, we'd look up the user's email
+                        "erc_issued.txt.tera".to_string(),
+                        serde_json::json!({ "amount": amount }),
+                        Some(format!("kafka:erc:{}", msg.offset())),
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
         }
         _ => {
             warn!("Unhandled event type: {}", event_type);
