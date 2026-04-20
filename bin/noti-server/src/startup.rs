@@ -40,12 +40,22 @@ fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
 
 fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     let mut reader = BufReader::new(std::fs::File::open(path)?);
-    let keys =
-        rustls_pemfile::pkcs8_private_keys(&mut reader).collect::<std::io::Result<Vec<_>>>()?;
+    let mut keys = Vec::new();
+    
+    // Try different key formats
+    for result in rustls_pemfile::read_all(&mut reader) {
+        match result? {
+            rustls_pemfile::Item::Pkcs8Key(key) => keys.push(PrivateKeyDer::Pkcs8(key)),
+            rustls_pemfile::Item::Pkcs1Key(key) => keys.push(PrivateKeyDer::Pkcs1(key)),
+            rustls_pemfile::Item::Sec1Key(key) => keys.push(PrivateKeyDer::Sec1(key)),
+            _ => continue,
+        }
+    }
+
     if let Some(key) = keys.into_iter().next() {
-        Ok(key.into())
+        Ok(key)
     } else {
-        anyhow::bail!("No PKCS8 keys found in key file")
+        anyhow::bail!("No supported private keys found in key file")
     }
 }
 
@@ -197,17 +207,25 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         ),
     );
 
+    let http_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.port)
+        .parse()
+        .context("Failed to parse HTTP address")?;
+
     let grpc_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.port + 10)
         .parse()
         .context("Failed to parse gRPC address")?;
 
     info!(
-        "🚀 Notification gRPC Service starting on {} (TCP)",
+        "🚀 Notification HTTP Service starting on {} (TCP)",
+        http_addr
+    );
+    info!(
+        "🚀 Notification gRPC Service starting on {} (TCP/UDP)",
         grpc_addr
     );
 
     // -----------------------------------------------------------------------
-    // 5a. HTTP/3 (QUIC) server
+    // 5a. HTTP/3 (QUIC) server (on gRPC port)
     // -----------------------------------------------------------------------
     let h3_token = token.clone();
     let h3_router = axum_router.clone();
@@ -220,14 +238,14 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         let certs = match load_certs(&cert_file) {
             Ok(c) => c,
             Err(e) => {
-                error!("Failed to load certs for H3: {}", e);
+                error!("Failed to load certs for H3: {}. H3 server disabled.", e);
                 return;
             }
         };
         let key = match load_private_key(&key_file) {
             Ok(k) => k,
             Err(e) => {
-                error!("Failed to load key for H3: {}", e);
+                error!("Failed to load key for H3: {}. H3 server disabled.", e);
                 return;
             }
         };
@@ -258,11 +276,6 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
                 return;
             }
         };
-
-        info!(
-            "🚀 Notification gRPC Service starting on {} (UDP/H3)",
-            grpc_addr
-        );
 
         loop {
             tokio::select! {
@@ -321,27 +334,59 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     });
 
     // -----------------------------------------------------------------------
-    // 5b. TCP server (Axum)
+    // 5b. TCP servers (Axum)
     // -----------------------------------------------------------------------
     let tcp_token = token.clone();
-    let tcp_router = axum_router.clone();
+    let http_router = axum_router.clone();
+    let g_addr = grpc_addr;
+    let h_addr = http_addr;
+    
     let tcp_handle = tokio::spawn(async move {
-        let listener = match tokio::net::TcpListener::bind(grpc_addr).await {
+        // HTTP Server
+        let http_listener = match tokio::net::TcpListener::bind(h_addr).await {
             Ok(l) => l,
             Err(e) => {
-                error!("Failed to bind TCP listener: {}", e);
+                error!("Failed to bind HTTP listener: {}", e);
+                return;
+            }
+        };
+        
+        // gRPC Server
+        let grpc_listener = match tokio::net::TcpListener::bind(g_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                error!("Failed to bind gRPC listener: {}", e);
                 return;
             }
         };
 
-        match axum::serve(listener, tcp_router)
-            .with_graceful_shutdown(async move {
-                tcp_token.cancelled().await;
-            })
-            .await
-        {
-            Ok(()) => info!("gRPC TCP server stopped gracefully"),
-            Err(e) => error!("gRPC TCP server failed: {}", e),
+        let http_token = tcp_token.clone();
+        let http_srv = tokio::spawn(async move {
+            if let Err(e) = axum::serve(http_listener, http_router)
+                .with_graceful_shutdown(async move {
+                    http_token.cancelled().await;
+                })
+                .await
+            {
+                error!("HTTP server failed: {}", e);
+            }
+        });
+
+        let grpc_token = tcp_token.clone();
+        let grpc_srv = tokio::spawn(async move {
+            if let Err(e) = axum::serve(grpc_listener, axum_router)
+                .with_graceful_shutdown(async move {
+                    grpc_token.cancelled().await;
+                })
+                .await
+            {
+                error!("gRPC server failed: {}", e);
+            }
+        });
+
+        tokio::select! {
+            _ = http_srv => info!("HTTP server stopped"),
+            _ = grpc_srv => info!("gRPC server stopped"),
         }
     });
 
