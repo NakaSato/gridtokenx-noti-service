@@ -91,6 +91,7 @@ impl NotificationOrchestrator {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             sent_at: None,
+            read_at: None,
         };
 
         let id = notification.id;
@@ -224,6 +225,24 @@ impl NotificationOrchestrator {
     pub async fn get_status(&self, id: Uuid) -> Result<Option<Notification>> {
         self.repo.get_by_id(id).await
     }
+
+    // ── User-facing Operations ───────────────────────────────────────────────
+
+    pub async fn list_user_notifications(&self, user_id: Uuid, limit: i64, offset: i64) -> Result<Vec<Notification>> {
+        self.repo.list_by_user(user_id, limit, offset).await
+    }
+
+    pub async fn mark_as_read(&self, id: Uuid, user_id: Uuid) -> Result<()> {
+        self.repo.mark_as_read(id, user_id).await
+    }
+
+    pub async fn mark_all_as_read(&self, user_id: Uuid) -> Result<()> {
+        self.repo.mark_all_as_read(user_id).await
+    }
+
+    pub async fn get_unread_count(&self, user_id: Uuid) -> Result<i64> {
+        self.repo.get_unread_count(user_id).await
+    }
 }
 
 #[cfg(test)]
@@ -247,6 +266,10 @@ mod tests {
         async fn update_status(&self, _id: Uuid, _status: NotificationStatus, _error: Option<String>, _provider_ref: Option<String>) -> Result<()> { Ok(()) }
         async fn increment_retry(&self, _id: Uuid, _next: chrono::DateTime<chrono::Utc>) -> Result<()> { Ok(()) }
         async fn get_pending_for_retry(&self, _limit: i32) -> Result<Vec<Notification>> { Ok(vec![]) }
+        async fn list_by_user(&self, _u: Uuid, _l: i64, _o: i64) -> Result<Vec<Notification>> { Ok(vec![]) }
+        async fn mark_as_read(&self, _i: Uuid, _u: Uuid) -> Result<()> { Ok(()) }
+        async fn mark_all_as_read(&self, _u: Uuid) -> Result<()> { Ok(()) }
+        async fn get_unread_count(&self, _u: Uuid) -> Result<i64> { Ok(0) }
     }
 
     struct MockCache;

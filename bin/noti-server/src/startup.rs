@@ -190,14 +190,32 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     let mut router = connectrpc::Router::new();
     router = Arc::new(grpc_service).register(router);
 
-    let axum_router = router.into_axum_router();
+    let grpc_router = router.into_axum_router();
     
-    // Add WebSocket and Health routes
-    let axum_router = axum_router
+    let state = noti_api::AppState {
+        orchestrator: orchestrator.clone(),
+    };
+    
+    // -----------------------------------------------------------------------
+    // 6. Build Axum Router
+    // -----------------------------------------------------------------------
+    
+    // a) Stateful routes
+    let stateful_router = axum::Router::new()
+        .route("/api/v1/users/me/notifications", axum::routing::get(noti_api::handlers::list_notifications))
+        .route("/api/v1/users/me/notifications/{id}", axum::routing::patch(noti_api::handlers::mark_notification_as_read))
+        .route("/api/v1/users/me/notifications/mark-all-read", axum::routing::post(noti_api::handlers::mark_all_notifications_as_read))
+        .with_state(state);
+
+    // b) Combine everything into the final Router<()>
+    let axum_router = axum::Router::new()
+        .nest("/", grpc_router)
+        .nest("/", stateful_router)
         .route("/ws", axum::routing::get(noti_api::websocket::ws_handler))
         .route("/health", axum::routing::get(noti_api::handlers::health_check))
         .route("/health/live", axum::routing::get(noti_api::handlers::health_live))
-        .layer(axum::Extension(ws_manager));
+        .layer(axum::Extension(ws_manager))
+        .layer(axum::Extension(noti_api::websocket::JwtSecret(config.jwt_secret.clone())));
 
     // Add Alt-Svc header for HTTP/3 advertisement
     let axum_router = axum_router.layer(

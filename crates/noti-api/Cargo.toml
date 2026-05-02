@@ -19,5 +19,8 @@ async-trait.workspace = true
 
 dashmap.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 uuid.workspace = true
 tracing.workspace = true
+jsonwebtoken.workspace = true
+gridtokenx-blockchain-core.workspace = true

@@ -19,6 +19,7 @@ WORKDIR /app
 
 # Copy the whole project to maintain structure for sqlx migrations
 COPY gridtokenx-noti-service/ gridtokenx-noti-service/
+COPY gridtokenx-blockchain-core/ gridtokenx-blockchain-core/
 
 WORKDIR /app/gridtokenx-noti-service
 

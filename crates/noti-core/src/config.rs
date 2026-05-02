@@ -34,6 +34,9 @@ pub struct Config {
     pub smtp_user: Option<String>,
     pub smtp_pass: Option<String>,
     pub smtp_from: Option<String>,
+
+    // JWT
+    pub jwt_secret: String,
 }
 
 impl Config {

@@ -1,15 +1,33 @@
 use std::sync::Arc;
 use async_trait::async_trait;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::Query;
 use axum::Extension;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use dashmap::DashMap;
+use jsonwebtoken::{decode, DecodingKey, Validation};
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use noti_core::traits::WebSocketRegistryTrait;
 use noti_core::error::Result;
+
+#[derive(Deserialize)]
+pub struct WsQuery {
+    pub token: String,
+}
+
+#[derive(Deserialize)]
+struct Claims {
+    sub: String,
+}
+
+/// Shared JWT secret injected via Extension.
+#[derive(Clone)]
+pub struct JwtSecret(pub String);
 
 /// Manages active WebSocket connections indexed by User ID.
 pub struct ConnectionManager {
@@ -60,11 +78,24 @@ impl Default for ConnectionManager {
 /// Axum handler for WebSocket upgrades.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
+    Query(query): Query<WsQuery>,
     Extension(manager): Extension<Arc<ConnectionManager>>,
-    // In a real app, we'd extract the user_id from a JWT here
+    Extension(jwt_secret): Extension<JwtSecret>,
 ) -> impl IntoResponse {
-    // For now, we'll use a random user_id if not provided, or a query param
-    let user_id = Uuid::new_v4(); 
+    let key = DecodingKey::from_secret(jwt_secret.0.as_bytes());
+    let token_data = decode::<Claims>(&query.token, &key, &Validation::default());
+
+    let user_id = match token_data {
+        Ok(data) => match Uuid::parse_str(&data.claims.sub) {
+            Ok(id) => id,
+            Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        },
+        Err(e) => {
+            warn!("🌐 WS JWT validation failed: {}", e);
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    };
+
     ws.on_upgrade(move |socket| handle_socket(socket, manager, user_id))
 }
 

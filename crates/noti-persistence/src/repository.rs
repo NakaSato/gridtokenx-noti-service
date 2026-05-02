@@ -37,6 +37,7 @@ pub struct NotificationRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub sent_at: Option<DateTime<Utc>>,
+    pub read_at: Option<DateTime<Utc>>,
 }
 
 impl NotificationRow {
@@ -58,6 +59,7 @@ impl NotificationRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
             sent_at: self.sent_at,
+            read_at: self.read_at,
         }
     }
 }
@@ -97,7 +99,7 @@ impl NotificationRepositoryTrait for NotificationRepository {
             SELECT
                 id, user_id, channel, status, recipient, template_id, variables,
                 provider_id, provider_ref, retry_count, next_retry_at, error_message,
-                idempotency_key, created_at, updated_at, sent_at
+                idempotency_key, created_at, updated_at, sent_at, read_at
             FROM notifications
             WHERE id = $1
             "#,
@@ -115,7 +117,7 @@ impl NotificationRepositoryTrait for NotificationRepository {
             SELECT
                 id, user_id, channel, status, recipient, template_id, variables,
                 provider_id, provider_ref, retry_count, next_retry_at, error_message,
-                idempotency_key, created_at, updated_at, sent_at
+                idempotency_key, created_at, updated_at, sent_at, read_at
             FROM notifications
             WHERE idempotency_key = $1
             "#,
@@ -181,7 +183,7 @@ impl NotificationRepositoryTrait for NotificationRepository {
             SELECT
                 id, user_id, channel, status, recipient, template_id, variables,
                 provider_id, provider_ref, retry_count, next_retry_at, error_message,
-                idempotency_key, created_at, updated_at, sent_at
+                idempotency_key, created_at, updated_at, sent_at, read_at
             FROM notifications
             WHERE status = 'pending' AND next_retry_at <= NOW()
             LIMIT $1
@@ -192,5 +194,69 @@ impl NotificationRepositoryTrait for NotificationRepository {
         .await?;
 
         Ok(res.into_iter().map(|r| r.into_domain()).collect())
+    }
+
+    async fn list_by_user(&self, user_id: Uuid, limit: i64, offset: i64) -> Result<Vec<Notification>> {
+        let res = sqlx::query_as::<_, NotificationRow>(
+            r#"
+            SELECT
+                id, user_id, channel, status, recipient, template_id, variables,
+                provider_id, provider_ref, retry_count, next_retry_at, error_message,
+                idempotency_key, created_at, updated_at, sent_at, read_at
+            FROM notifications
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(res.into_iter().map(|r| r.into_domain()).collect())
+    }
+
+    async fn mark_as_read(&self, id: Uuid, user_id: Uuid) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE notifications
+            SET read_at = NOW(), updated_at = NOW()
+            WHERE id = $1 AND user_id = $2 AND read_at IS NULL
+            "#,
+        )
+        .bind(id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn mark_all_as_read(&self, user_id: Uuid) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE notifications
+            SET read_at = NOW(), updated_at = NOW()
+            WHERE user_id = $1 AND read_at IS NULL
+            "#,
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_unread_count(&self, user_id: Uuid) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL"
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.0)
     }
 }
