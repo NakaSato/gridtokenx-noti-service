@@ -162,6 +162,25 @@ async fn handle_kafka_message(
                     .map_err(|e| anyhow::anyhow!(e))?;
             }
         }
+        "PasswordResetRequested" => {
+            let user_id = event["data"]["user_id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            let email = event["data"]["email"].as_str().unwrap_or_default();
+            let reset_url = event["data"]["reset_url"].as_str().unwrap_or_default();
+
+            if !email.is_empty() {
+                orchestrator
+                    .queue_notification(
+                        user_id,
+                        NotificationChannel::Email,
+                        email.to_string(),
+                        "password_reset.txt.tera".to_string(),
+                        serde_json::json!({ "reset_url": reset_url }),
+                        Some(format!("kafka:pwd_reset:{}", msg.offset())),
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+        }
         _ => {
             warn!("Unhandled event type: {}", event_type);
         }
