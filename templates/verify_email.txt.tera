@@ -1,0 +1,10 @@
+Hello {{ name }},
+
+Please verify your email address by clicking the link below:
+
+{{ verification_url }}
+
+If you did not create an account with GridTokenX, please ignore this email.
+
+Best regards,
+GridTokenX Team

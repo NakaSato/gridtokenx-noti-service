@@ -34,6 +34,8 @@ pub struct Config {
     pub smtp_user: Option<String>,
     pub smtp_pass: Option<String>,
     pub smtp_from: Option<String>,
+    /// TLS mode: "starttls" (default), "tls" (implicit, port 465), "none" (no TLS, e.g. Mailpit)
+    pub smtp_tls_mode: Option<String>,
 
     // JWT
     pub jwt_secret: String,

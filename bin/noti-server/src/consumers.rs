@@ -94,7 +94,7 @@ async fn handle_kafka_message(
                         email.to_string(),
                         "welcome.txt.tera".to_string(),
                         serde_json::json!({ "name": username }),
-                        Some(format!("kafka:{}:{}", msg.topic(), msg.offset())),
+                        Some(format!("kafka:{}:{}:{}", msg.topic(), msg.partition(), msg.offset())),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -115,7 +115,7 @@ async fn handle_kafka_message(
                         uid.to_string(),
                         "trade_matched.txt.tera".to_string(),
                         serde_json::json!({ "role": "buyer", "amount": amount, "price": price }),
-                        Some(format!("kafka:matched:buy:{}", msg.offset())),
+                        Some(format!("kafka:matched:buy:{}:{}", msg.partition(), msg.offset())),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -130,7 +130,7 @@ async fn handle_kafka_message(
                         uid.to_string(),
                         "trade_matched.txt.tera".to_string(),
                         serde_json::json!({ "role": "seller", "amount": amount, "price": price }),
-                        Some(format!("kafka:matched:sell:{}", msg.offset())),
+                        Some(format!("kafka:matched:sell:{}:{}", msg.partition(), msg.offset())),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -156,7 +156,7 @@ async fn handle_kafka_message(
                         "user@example.com".to_string(), // In reality, we'd look up the user's email
                         "erc_issued.txt.tera".to_string(),
                         serde_json::json!({ "amount": amount }),
-                        Some(format!("kafka:erc:{}", msg.offset())),
+                        Some(format!("kafka:erc:{}:{}", msg.partition(), msg.offset())),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -175,7 +175,26 @@ async fn handle_kafka_message(
                         email.to_string(),
                         "password_reset.txt.tera".to_string(),
                         serde_json::json!({ "reset_url": reset_url }),
-                        Some(format!("kafka:pwd_reset:{}", msg.offset())),
+                        Some(format!("kafka:pwd_reset:{}:{}", msg.partition(), msg.offset())),
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+        }
+        "VerificationEmailRequested" => {
+            let email = event["data"]["email"].as_str().unwrap_or_default();
+            let username = event["data"]["username"].as_str().unwrap_or_default();
+            let verification_url = event["data"]["verification_url"].as_str().unwrap_or_default();
+
+            if !email.is_empty() {
+                orchestrator
+                    .queue_notification(
+                        None,
+                        NotificationChannel::Email,
+                        email.to_string(),
+                        "verify_email.html.tera".to_string(),
+                        serde_json::json!({ "name": username, "verification_url": verification_url }),
+                        Some(format!("kafka:verify_email:{}:{}", msg.partition(), msg.offset())),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;

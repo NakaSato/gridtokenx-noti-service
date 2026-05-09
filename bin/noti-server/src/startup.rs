@@ -96,13 +96,14 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     let ws_registry: Arc<dyn noti_core::traits::WebSocketRegistryTrait> = ws_manager.clone();
 
     let email_provider: Arc<dyn NotificationProviderTrait> = if let Some(host) = config.smtp_host.as_ref() {
-        info!("📧 Configuring real SMTP provider for {}", host);
+        info!("📧 Configuring real SMTP provider for {} (tls_mode: {:?})", host, config.smtp_tls_mode);
         Arc::new(noti_persistence::providers::smtp::SmtpProvider::new(
             host,
             config.smtp_port.unwrap_or(587),
             config.smtp_user.clone(),
             config.smtp_pass.clone(),
             config.smtp_from.clone().unwrap_or_else(|| "no-reply@gridtokenx.com".to_string()),
+            config.smtp_tls_mode.as_deref(),
         ))
     } else {
         tracing::warn!("⚠️ No SMTP host configured, using MockEmailProvider");
@@ -209,8 +210,8 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
 
     // b) Combine everything into the final Router<()>
     let axum_router = axum::Router::new()
-        .nest("/", grpc_router)
-        .nest("/", stateful_router)
+        .merge(grpc_router)
+        .merge(stateful_router)
         .route("/ws", axum::routing::get(noti_api::websocket::ws_handler))
         .route("/health", axum::routing::get(noti_api::handlers::health_check))
         .route("/health/live", axum::routing::get(noti_api::handlers::health_live))
