@@ -1,19 +1,19 @@
-use std::sync::Arc;
 use async_trait::async_trait;
-use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::Query;
 use axum::Extension;
+use axum::extract::Query;
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use dashmap::DashMap;
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use jsonwebtoken::{DecodingKey, Validation, decode};
 use serde::Deserialize;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use noti_core::traits::WebSocketRegistryTrait;
 use noti_core::error::Result;
+use noti_core::traits::WebSocketRegistryTrait;
 
 #[derive(Deserialize)]
 pub struct WsQuery {
@@ -72,8 +72,6 @@ impl Default for ConnectionManager {
         Self::new()
     }
 }
-
-
 
 /// Axum handler for WebSocket upgrades.
 pub async fn ws_handler(

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use lettre::message::{MultiPart, SinglePart, header::ContentType};
 use lettre::transport::smtp::authentication::Credentials;
-use lettre::{Message, AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use tracing::{error, info};
 
 use noti_core::error::{NotiError, Result};
@@ -13,20 +13,31 @@ pub struct SmtpProvider {
 }
 
 impl SmtpProvider {
-    pub fn new(host: &str, port: u16, username: Option<String>, password: Option<String>, from_email: String, tls_mode: Option<&str>) -> Self {
-        let effective_mode = tls_mode.unwrap_or_else(|| {
-            if port == 465 { "tls" } else { "starttls" }
-        });
+    pub fn new(
+        host: &str,
+        port: u16,
+        username: Option<String>,
+        password: Option<String>,
+        from_email: String,
+        tls_mode: Option<&str>,
+    ) -> Self {
+        let effective_mode =
+            tls_mode.unwrap_or_else(|| if port == 465 { "tls" } else { "starttls" });
 
         let mut builder = match effective_mode {
             "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(host).expect("Valid SMTP host"),
-            "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).expect("Valid SMTP host"),
+            "starttls" => {
+                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).expect("Valid SMTP host")
+            }
             "none" | "insecure" => {
                 // No TLS - suitable for local testing with Mailpit
                 AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host).port(port)
             }
             _ => {
-                error!("Unknown SMTP TLS mode: {}, falling back to starttls", effective_mode);
+                error!(
+                    "Unknown SMTP TLS mode: {}, falling back to starttls",
+                    effective_mode
+                );
                 AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).expect("Valid SMTP host")
             }
         };
@@ -55,15 +66,22 @@ impl NotificationProviderTrait for SmtpProvider {
         info!("📧 Sending SMTP email to {}", recipient);
 
         // Parse content to detect if it's HTML or multipart
-        let is_html = content.trim().starts_with("<!DOCTYPE") || content.trim().starts_with("<html");
-        
+        let is_html =
+            content.trim().starts_with("<!DOCTYPE") || content.trim().starts_with("<html");
+
         let email = if is_html {
             // Extract text fallback from HTML content (simple stripping)
             let text_fallback = html_to_text(content);
-            
+
             Message::builder()
-                .from(self.from_email.parse().map_err(|e| NotiError::Internal(format!("Invalid from email: {e}")))? )
-                .to(recipient.parse().map_err(|e| NotiError::Internal(format!("Invalid recipient email: {e}")))? )
+                .from(
+                    self.from_email
+                        .parse()
+                        .map_err(|e| NotiError::Internal(format!("Invalid from email: {e}")))?,
+                )
+                .to(recipient
+                    .parse()
+                    .map_err(|e| NotiError::Internal(format!("Invalid recipient email: {e}")))?)
                 .subject("GridTokenX Notification")
                 .multipart(
                     MultiPart::alternative()
@@ -81,8 +99,14 @@ impl NotificationProviderTrait for SmtpProvider {
                 .map_err(|e| NotiError::Internal(format!("Failed to build email: {e}")))?
         } else {
             Message::builder()
-                .from(self.from_email.parse().map_err(|e| NotiError::Internal(format!("Invalid from email: {e}")))? )
-                .to(recipient.parse().map_err(|e| NotiError::Internal(format!("Invalid recipient email: {e}")))? )
+                .from(
+                    self.from_email
+                        .parse()
+                        .map_err(|e| NotiError::Internal(format!("Invalid from email: {e}")))?,
+                )
+                .to(recipient
+                    .parse()
+                    .map_err(|e| NotiError::Internal(format!("Invalid recipient email: {e}")))?)
                 .subject("GridTokenX Notification")
                 .body(content.to_string())
                 .map_err(|e| NotiError::Internal(format!("Failed to build email: {e}")))?
@@ -90,7 +114,10 @@ impl NotificationProviderTrait for SmtpProvider {
 
         match self.transport.send(email).await {
             Ok(response) => {
-                let id = response.first_line().unwrap_or("unknown-smtp-id").to_string();
+                let id = response
+                    .first_line()
+                    .unwrap_or("unknown-smtp-id")
+                    .to_string();
                 info!("✅ SMTP email sent successfully: {}", id);
                 Ok(id)
             }
@@ -111,11 +138,11 @@ fn html_to_text(html: &str) -> String {
     // Remove script and style elements
     let re = regex::Regex::new(r"(?s)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>").unwrap();
     let text = re.replace_all(html, "");
-    
+
     // Remove all HTML tags
     let re = regex::Regex::new(r"<[^>]*>").unwrap();
     let text = re.replace_all(&text, "");
-    
+
     // Decode HTML entities
     let text = text
         .replace("&amp;", "&")
@@ -124,7 +151,7 @@ fn html_to_text(html: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&nbsp;", " ");
-    
+
     // Clean up whitespace
     let text = text
         .lines()
@@ -132,6 +159,6 @@ fn html_to_text(html: &str) -> String {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
-    
+
     text
 }

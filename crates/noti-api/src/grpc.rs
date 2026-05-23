@@ -60,8 +60,7 @@ impl NotificationService for NotificationGrpcService {
         };
 
         let variables = if !request.variables_json.is_empty() {
-            serde_json::from_str(request.variables_json)
-                .unwrap_or_else(|_| serde_json::json!({}))
+            serde_json::from_str(request.variables_json).unwrap_or_else(|_| serde_json::json!({}))
         } else {
             serde_json::json!({})
         };

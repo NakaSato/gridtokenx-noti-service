@@ -27,7 +27,7 @@ pub struct Config {
     pub twilio_account_sid: Option<String>,
     pub twilio_auth_token: Option<String>,
     pub fcm_project_id: Option<String>,
-    
+
     // SMTP Configuration
     pub smtp_host: Option<String>,
     pub smtp_port: Option<u16>,

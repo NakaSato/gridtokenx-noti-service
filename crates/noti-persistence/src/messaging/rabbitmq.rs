@@ -5,9 +5,9 @@
 
 use async_trait::async_trait;
 use lapin::{
+    BasicProperties, Connection, ConnectionProperties, ExchangeKind,
     options::*,
     types::{AMQPValue, FieldTable, ShortString},
-    BasicProperties, Connection, ConnectionProperties, ExchangeKind,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -88,8 +88,7 @@ impl RabbitMQClient {
     }
 
     async fn publish_task(&self, task: &NotificationTask, delay_mins: i32) -> Result<()> {
-        let payload =
-            serde_json::to_vec(task).map_err(|e| NotiError::Internal(e.to_string()))?;
+        let payload = serde_json::to_vec(task).map_err(|e| NotiError::Internal(e.to_string()))?;
 
         if delay_mins > 0 {
             let expiration = (delay_mins * 60 * 1000).to_string();
@@ -97,10 +96,7 @@ impl RabbitMQClient {
                 BasicProperties::default().with_expiration(ShortString::from(expiration));
 
             let mut headers = FieldTable::default();
-            headers.insert(
-                "x-retry-count".into(),
-                AMQPValue::LongInt(task.retry_count),
-            );
+            headers.insert("x-retry-count".into(), AMQPValue::LongInt(task.retry_count));
             props = props.with_headers(headers);
 
             self.channel

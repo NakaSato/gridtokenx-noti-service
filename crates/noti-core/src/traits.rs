@@ -29,9 +29,14 @@ pub trait NotificationRepositoryTrait: Send + Sync {
     ) -> Result<()>;
     async fn increment_retry(&self, id: Uuid, next_retry_at: DateTime<Utc>) -> Result<()>;
     async fn get_pending_for_retry(&self, limit: i32) -> Result<Vec<Notification>>;
-    
+
     // User-facing operations
-    async fn list_by_user(&self, user_id: Uuid, limit: i64, offset: i64) -> Result<Vec<Notification>>;
+    async fn list_by_user(
+        &self,
+        user_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Notification>>;
     async fn mark_as_read(&self, id: Uuid, user_id: Uuid) -> Result<()>;
     async fn mark_all_as_read(&self, user_id: Uuid) -> Result<()>;
     async fn get_unread_count(&self, user_id: Uuid) -> Result<i64>;

@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use async_trait::async_trait;
+use std::sync::Arc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -21,8 +21,9 @@ impl NotificationProviderTrait for WebSocketProvider {
     async fn send(&self, recipient: &str, content: &str) -> Result<String> {
         info!("🌐 Sending WebSocket message to {}", recipient);
 
-        let user_id = Uuid::parse_str(recipient)
-            .map_err(|e| NotiError::Internal(format!("Invalid UUID for WebSocket recipient: {e}")))?;
+        let user_id = Uuid::parse_str(recipient).map_err(|e| {
+            NotiError::Internal(format!("Invalid UUID for WebSocket recipient: {e}"))
+        })?;
 
         match self.registry.send_to_user(&user_id, content).await {
             Ok(true) => {
@@ -35,9 +36,7 @@ impl NotificationProviderTrait for WebSocketProvider {
                 // For a "best effort" channel like WS, we might return Success but with a note
                 Ok("not-connected".to_string())
             }
-            Err(e) => {
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 

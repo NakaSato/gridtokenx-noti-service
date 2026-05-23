@@ -94,15 +94,24 @@ async fn handle_kafka_message(
                         email.to_string(),
                         "welcome.txt.tera".to_string(),
                         serde_json::json!({ "name": username }),
-                        Some(format!("kafka:{}:{}:{}", msg.topic(), msg.partition(), msg.offset())),
+                        Some(format!(
+                            "kafka:{}:{}:{}",
+                            msg.topic(),
+                            msg.partition(),
+                            msg.offset()
+                        )),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
             }
         }
         "OrderMatched" => {
-            let buyer_id = event["data"]["buyer_id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
-            let seller_id = event["data"]["seller_id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            let buyer_id = event["data"]["buyer_id"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok());
+            let seller_id = event["data"]["seller_id"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok());
             let amount = &event["data"]["amount"];
             let price = &event["data"]["price"];
 
@@ -115,7 +124,11 @@ async fn handle_kafka_message(
                         uid.to_string(),
                         "trade_matched.txt.tera".to_string(),
                         serde_json::json!({ "role": "buyer", "amount": amount, "price": price }),
-                        Some(format!("kafka:matched:buy:{}:{}", msg.partition(), msg.offset())),
+                        Some(format!(
+                            "kafka:matched:buy:{}:{}",
+                            msg.partition(),
+                            msg.offset()
+                        )),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -130,7 +143,11 @@ async fn handle_kafka_message(
                         uid.to_string(),
                         "trade_matched.txt.tera".to_string(),
                         serde_json::json!({ "role": "seller", "amount": amount, "price": price }),
-                        Some(format!("kafka:matched:sell:{}:{}", msg.partition(), msg.offset())),
+                        Some(format!(
+                            "kafka:matched:sell:{}:{}",
+                            msg.partition(),
+                            msg.offset()
+                        )),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -145,7 +162,9 @@ async fn handle_kafka_message(
             info!("Settlement {} processed with status: {}", tx_sig, status);
         }
         "ErcIssued" => {
-            let user_id = event["data"]["user_id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            let user_id = event["data"]["user_id"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok());
             let amount = &event["data"]["energy_amount"];
 
             if let Some(uid) = user_id {
@@ -163,7 +182,9 @@ async fn handle_kafka_message(
             }
         }
         "PasswordResetRequested" => {
-            let user_id = event["data"]["user_id"].as_str().and_then(|id| Uuid::parse_str(id).ok());
+            let user_id = event["data"]["user_id"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok());
             let email = event["data"]["email"].as_str().unwrap_or_default();
             let reset_url = event["data"]["reset_url"].as_str().unwrap_or_default();
 
@@ -175,7 +196,11 @@ async fn handle_kafka_message(
                         email.to_string(),
                         "password_reset.txt.tera".to_string(),
                         serde_json::json!({ "reset_url": reset_url }),
-                        Some(format!("kafka:pwd_reset:{}:{}", msg.partition(), msg.offset())),
+                        Some(format!(
+                            "kafka:pwd_reset:{}:{}",
+                            msg.partition(),
+                            msg.offset()
+                        )),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -184,7 +209,9 @@ async fn handle_kafka_message(
         "VerificationEmailRequested" => {
             let email = event["data"]["email"].as_str().unwrap_or_default();
             let username = event["data"]["username"].as_str().unwrap_or_default();
-            let verification_url = event["data"]["verification_url"].as_str().unwrap_or_default();
+            let verification_url = event["data"]["verification_url"]
+                .as_str()
+                .unwrap_or_default();
 
             if !email.is_empty() {
                 orchestrator

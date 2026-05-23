@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use quinn::Endpoint;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sqlx::postgres::PgPoolOptions;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -41,7 +41,7 @@ fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
 fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     let mut reader = BufReader::new(std::fs::File::open(path)?);
     let mut keys = Vec::new();
-    
+
     // Try different key formats
     for result in rustls_pemfile::read_all(&mut reader) {
         match result? {
@@ -87,40 +87,44 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     let repo: Arc<dyn NotificationRepositoryTrait> =
         Arc::new(NotificationRepository::new(db_pool.clone()));
 
-    let template_engine: Arc<dyn TemplateEngineTrait> = Arc::new(
-        TemplateEngine::new("templates").context("Failed to initialize template engine")?,
-    );
+    let template_engine: Arc<dyn TemplateEngineTrait> =
+        Arc::new(TemplateEngine::new("templates").context("Failed to initialize template engine")?);
 
     // WebSocket management
     let ws_manager = Arc::new(noti_api::websocket::ConnectionManager::new());
     let ws_registry: Arc<dyn noti_core::traits::WebSocketRegistryTrait> = ws_manager.clone();
 
-    let email_provider: Arc<dyn NotificationProviderTrait> = if let Some(host) = config.smtp_host.as_ref() {
-        info!("📧 Configuring real SMTP provider for {} (tls_mode: {:?})", host, config.smtp_tls_mode);
-        Arc::new(noti_persistence::providers::smtp::SmtpProvider::new(
-            host,
-            config.smtp_port.unwrap_or(587),
-            config.smtp_user.clone(),
-            config.smtp_pass.clone(),
-            config.smtp_from.clone().unwrap_or_else(|| "no-reply@gridtokenx.com".to_string()),
-            config.smtp_tls_mode.as_deref(),
-        ))
-    } else {
-        tracing::warn!("⚠️ No SMTP host configured, using MockEmailProvider");
-        Arc::new(MockEmailProvider)
-    };
+    let email_provider: Arc<dyn NotificationProviderTrait> =
+        if let Some(host) = config.smtp_host.as_ref() {
+            info!(
+                "📧 Configuring real SMTP provider for {} (tls_mode: {:?})",
+                host, config.smtp_tls_mode
+            );
+            Arc::new(noti_persistence::providers::smtp::SmtpProvider::new(
+                host,
+                config.smtp_port.unwrap_or(587),
+                config.smtp_user.clone(),
+                config.smtp_pass.clone(),
+                config
+                    .smtp_from
+                    .clone()
+                    .unwrap_or_else(|| "no-reply@gridtokenx.com".to_string()),
+                config.smtp_tls_mode.as_deref(),
+            ))
+        } else {
+            tracing::warn!("⚠️ No SMTP host configured, using MockEmailProvider");
+            Arc::new(MockEmailProvider)
+        };
 
     let sms_provider: Arc<dyn NotificationProviderTrait> = Arc::new(MockSmsProvider);
     let push_provider: Arc<dyn NotificationProviderTrait> = Arc::new(MockPushProvider);
     let webhook_provider: Arc<dyn NotificationProviderTrait> = Arc::new(MockWebhookProvider);
-    let websocket_provider: Arc<dyn NotificationProviderTrait> = Arc::new(
-        noti_persistence::providers::websocket::WebSocketProvider::new(ws_registry)
-    );
+    let websocket_provider: Arc<dyn NotificationProviderTrait> =
+        Arc::new(noti_persistence::providers::websocket::WebSocketProvider::new(ws_registry));
 
     // Optional RabbitMQ
     let mq_client = if !config.rabbitmq_url.is_empty() {
-        match noti_persistence::messaging::rabbitmq::RabbitMQClient::new(&config.rabbitmq_url)
-            .await
+        match noti_persistence::messaging::rabbitmq::RabbitMQClient::new(&config.rabbitmq_url).await
         {
             Ok(mq) => Some(Arc::new(mq)),
             Err(e) => {
@@ -177,8 +181,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         let orch = orchestrator.clone();
         let t = token.clone();
         tokio::spawn(async move {
-            if let Err(e) = consumers::start_kafka_consumer(kafka_consumer, topics, orch, t).await
-            {
+            if let Err(e) = consumers::start_kafka_consumer(kafka_consumer, topics, orch, t).await {
                 error!("Kafka consumer failed: {}", e);
             }
         });
@@ -192,39 +195,55 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     router = Arc::new(grpc_service).register(router);
 
     let grpc_router = router.into_axum_router();
-    
+
     let state = noti_api::AppState {
         orchestrator: orchestrator.clone(),
     };
-    
+
     // -----------------------------------------------------------------------
     // 6. Build Axum Router
     // -----------------------------------------------------------------------
-    
-    // a) Stateful routes
-    let stateful_router = axum::Router::new()
-        .route("/api/v1/users/me/notifications", axum::routing::get(noti_api::handlers::list_notifications))
-        .route("/api/v1/users/me/notifications/{id}", axum::routing::patch(noti_api::handlers::mark_notification_as_read))
-        .route("/api/v1/users/me/notifications/mark-all-read", axum::routing::post(noti_api::handlers::mark_all_notifications_as_read))
-        .with_state(state);
 
-    // b) Combine everything into the final Router<()>
+    // b) Build final router
     let axum_router = axum::Router::new()
         .merge(grpc_router)
-        .merge(stateful_router)
+        .nest(
+            "/api/v1/notifications",
+            axum::Router::<noti_api::AppState>::new()
+                .route(
+                    "/",
+                    axum::routing::get(noti_api::handlers::list_notifications),
+                )
+                .route(
+                    "/{id}",
+                    axum::routing::patch(noti_api::handlers::mark_notification_as_read),
+                )
+                .route(
+                    "/mark-all-read",
+                    axum::routing::post(noti_api::handlers::mark_all_notifications_as_read),
+                )
+                .with_state(state),
+        )
         .route("/ws", axum::routing::get(noti_api::websocket::ws_handler))
-        .route("/health", axum::routing::get(noti_api::handlers::health_check))
-        .route("/health/live", axum::routing::get(noti_api::handlers::health_live))
+        .route(
+            "/health",
+            axum::routing::get(noti_api::handlers::health_check),
+        )
+        .route(
+            "/health/live",
+            axum::routing::get(noti_api::handlers::health_live),
+        )
         .layer(axum::Extension(ws_manager))
-        .layer(axum::Extension(noti_api::websocket::JwtSecret(config.jwt_secret.clone())));
+        .layer(axum::Extension(noti_api::websocket::JwtSecret(
+            config.jwt_secret.clone(),
+        )));
 
     // Add Alt-Svc header for HTTP/3 advertisement
-    let axum_router = axum_router.layer(
-        tower_http::set_header::SetResponseHeaderLayer::overriding(
+    let axum_router =
+        axum_router.layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
             http::header::ALT_SVC,
             http::HeaderValue::from_static("h3=\":5060\"; ma=86400"),
-        ),
-    );
+        ));
 
     let http_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.port)
         .parse()
@@ -359,7 +378,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     let http_router = axum_router.clone();
     let g_addr = grpc_addr;
     let h_addr = http_addr;
-    
+
     let tcp_handle = tokio::spawn(async move {
         // HTTP Server
         let http_listener = match tokio::net::TcpListener::bind(h_addr).await {
@@ -369,7 +388,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
                 return;
             }
         };
-        
+
         // gRPC Server
         let grpc_listener = match tokio::net::TcpListener::bind(g_addr).await {
             Ok(l) => l,
@@ -414,7 +433,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     // -----------------------------------------------------------------------
     token.cancelled().await;
     info!("Service cancellation received");
-    
+
     // Cleanup
     let _ = tcp_handle.abort();
     let _ = h3_handle.abort();

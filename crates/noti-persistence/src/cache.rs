@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
-use redis::{aio::ConnectionManager, Client};
+use redis::{Client, aio::ConnectionManager};
 use tracing::info;
 
 use noti_core::error::{NotiError, Result};
@@ -41,12 +41,7 @@ impl CacheService {
 
 #[async_trait]
 impl CacheTrait for CacheService {
-    async fn set_value(
-        &self,
-        key: &str,
-        value: serde_json::Value,
-        ttl_secs: u64,
-    ) -> Result<()> {
+    async fn set_value(&self, key: &str, value: serde_json::Value, ttl_secs: u64) -> Result<()> {
         let serialized = value.to_string();
         let mut conn = self.conn.clone();
         let full_key = self.full_key(key);

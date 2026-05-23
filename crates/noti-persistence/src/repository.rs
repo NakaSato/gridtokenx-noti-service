@@ -196,7 +196,12 @@ impl NotificationRepositoryTrait for NotificationRepository {
         Ok(res.into_iter().map(|r| r.into_domain()).collect())
     }
 
-    async fn list_by_user(&self, user_id: Uuid, limit: i64, offset: i64) -> Result<Vec<Notification>> {
+    async fn list_by_user(
+        &self,
+        user_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Notification>> {
         let res = sqlx::query_as::<_, NotificationRow>(
             r#"
             SELECT
@@ -251,7 +256,7 @@ impl NotificationRepositoryTrait for NotificationRepository {
 
     async fn get_unread_count(&self, user_id: Uuid) -> Result<i64> {
         let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL"
+            "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL",
         )
         .bind(user_id)
         .fetch_one(&self.pool)
