@@ -1,34 +1,37 @@
+# syntax=docker/dockerfile:1
 # -----------------------------------------------------------------------------
 # Stage 1: Builder
 # -----------------------------------------------------------------------------
 FROM rust:1.89-bookworm AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    pkg-config \
-    libssl-dev \
-    cmake \
-    clang \
-    git \
-    curl \
-    protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
+# Install build dependencies with cache mount
+RUN --mount=type=cache,target=/var/lib/apt/lists <<EOT
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        pkg-config \
+        libssl-dev \
+        cmake \
+        clang \
+        git \
+        curl \
+        protobuf-compiler
+EOT
 
 WORKDIR /app
 
-# Copy the whole project to maintain structure for sqlx migrations
+# Copy dependency manifests and project structure
 COPY gridtokenx-noti-service/ gridtokenx-noti-service/
 COPY gridtokenx-blockchain-core/ gridtokenx-blockchain-core/
 
 WORKDIR /app/gridtokenx-noti-service
 
-# Build in release mode
-# Note: we use --bin noti-server which is defined in crates/noti-server
-RUN cargo build --release --bin noti-server
-
-# Strip binary to reduce size
-RUN strip target/release/noti-server
+# Build in release mode with cargo cache mounts
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/gridtokenx-noti-service/target \
+    cargo build --release --bin noti-server && \
+    strip target/release/noti-server && \
+    cp target/release/noti-server /app/noti-server-bin
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime
@@ -36,21 +39,25 @@ RUN strip target/release/noti-server
 FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    tzdata \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/lib/apt/lists <<EOT
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl3 \
+        tzdata \
+        curl
+EOT
 
 # Create non-root user
-RUN groupadd -g 1000 appgroup && \
+RUN <<EOT
+    groupadd -g 1000 appgroup
     useradd -u 1000 -g appgroup -s /bin/sh appuser
+EOT
 
 WORKDIR /app
 
 # Copy binary from builder stage
-COPY --from=builder /app/gridtokenx-noti-service/target/release/noti-server /app/noti-server
+COPY --from=builder /app/noti-server-bin /app/noti-server
 
 # Copy assets
 COPY --from=builder /app/gridtokenx-noti-service/templates /app/templates
