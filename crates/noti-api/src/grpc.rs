@@ -1,9 +1,9 @@
-//! ConnectRPC / gRPC service implementation for the notification service.
+//! `ConnectRPC` / gRPC service implementation for the notification service.
 
 use std::sync::Arc;
 
 use buffa::view::OwnedView;
-use connectrpc::{ConnectError, Context};
+use connectrpc::{ConnectError, Response, response::RequestContext as Context};
 use tracing::info;
 use uuid::Uuid;
 
@@ -19,17 +19,20 @@ pub struct NotificationGrpcService {
 }
 
 impl NotificationGrpcService {
+    #[must_use]
     pub fn new(orchestrator: Arc<NotificationOrchestrator>) -> Self {
         Self { orchestrator }
     }
 }
 
+#[allow(unknown_lints)]
+#[allow(refining_impl_trait)]
 impl NotificationService for NotificationGrpcService {
     async fn send_notification(
         &self,
-        ctx: Context,
+        _ctx: Context,
         request: OwnedView<SendNotificationRequestView<'static>>,
-    ) -> Result<(NotificationResponse, Context), ConnectError> {
+    ) -> Result<Response<NotificationResponse>, ConnectError> {
         info!(
             "📬 gRPC: SendNotification request for template {}",
             request.template_id
@@ -41,28 +44,31 @@ impl NotificationService for NotificationGrpcService {
             buffa::EnumValue::Known(Channel::PUSH) => NotificationChannel::Push,
             buffa::EnumValue::Known(Channel::WEBHOOK) => NotificationChannel::Webhook,
             buffa::EnumValue::Known(Channel::WEBSOCKET) => NotificationChannel::WebSocket,
+            #[allow(clippy::match_same_arms)]
             _ => NotificationChannel::Email,
         };
 
-        let user_id = if !request.user_id.is_empty() {
+        let user_id = if request.user_id.is_empty() {
+            None
+        } else {
             Some(
                 Uuid::parse_str(request.user_id)
                     .map_err(|e| ConnectError::invalid_argument(e.to_string()))?,
             )
-        } else {
-            None
         };
 
-        let idempotency_key = if !request.idempotency_key.is_empty() {
+        let idempotency_key = if request.idempotency_key.is_empty() {
+            None
+        } else {
             Some(request.idempotency_key.to_string())
-        } else {
-            None
         };
 
-        let variables = if !request.variables_json.is_empty() {
-            serde_json::from_str(request.variables_json).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
+        let variables = if request.variables_json.is_empty() {
             serde_json::json!({})
+        } else {
+            serde_json::from_str(request.variables_json).map_err(|e| {
+                ConnectError::invalid_argument(format!("variables_json must be valid JSON: {e}"))
+            })?
         };
 
         match self
@@ -77,23 +83,20 @@ impl NotificationService for NotificationGrpcService {
             )
             .await
         {
-            Ok(id) => Ok((
-                NotificationResponse {
-                    notification_id: id.to_string(),
-                    status: "accepted".to_string(),
-                    ..Default::default()
-                },
-                ctx,
-            )),
+            Ok(id) => Ok(Response::new(NotificationResponse {
+                notification_id: id.to_string(),
+                status: "accepted".to_string(),
+                ..Default::default()
+            })),
             Err(e) => Err(ConnectError::internal(e.to_string())),
         }
     }
 
     async fn get_notification_status(
         &self,
-        ctx: Context,
+        _ctx: Context,
         request: OwnedView<GetNotificationStatusRequestView<'static>>,
-    ) -> Result<(NotificationStatusResponse, Context), ConnectError> {
+    ) -> Result<Response<NotificationStatusResponse>, ConnectError> {
         info!(
             "🔍 gRPC: GetNotificationStatus request for {}",
             request.notification_id
@@ -109,18 +112,15 @@ impl NotificationService for NotificationGrpcService {
             .map_err(|e| ConnectError::internal(e.to_string()))?
             .ok_or_else(|| ConnectError::not_found("Notification not found"))?;
 
-        Ok((
-            NotificationStatusResponse {
-                notification_id: notification.id.to_string(),
-                status: format!("{:?}", notification.status).to_lowercase(),
-                error_message: notification.error_message.unwrap_or_default(),
-                sent_at: notification
-                    .sent_at
-                    .map(|t| t.to_rfc3339())
-                    .unwrap_or_default(),
-                ..Default::default()
-            },
-            ctx,
-        ))
+        Ok(Response::new(NotificationStatusResponse {
+            notification_id: notification.id.to_string(),
+            status: format!("{:?}", notification.status).to_lowercase(),
+            error_message: notification.error_message.unwrap_or_default(),
+            sent_at: notification
+                .sent_at
+                .map(|t| t.to_rfc3339())
+                .unwrap_or_default(),
+            ..Default::default()
+        }))
     }
 }
