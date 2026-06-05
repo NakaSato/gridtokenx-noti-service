@@ -17,7 +17,7 @@ use crate::error::Result;
 /// Persistent storage for notification records.
 #[async_trait]
 pub trait NotificationRepositoryTrait: Send + Sync {
-    async fn create(&self, notification: &Notification) -> Result<()>;
+    async fn create(&self, notification: &Notification) -> Result<Notification>;
     async fn get_by_id(&self, id: Uuid) -> Result<Option<Notification>>;
     async fn get_by_idempotency_key(&self, key: &str) -> Result<Option<Notification>>;
     async fn update_status(
@@ -73,6 +73,10 @@ pub trait CacheTrait: Send + Sync {
     async fn get_value(&self, key: &str) -> Result<Option<serde_json::Value>>;
     async fn increment_with_ttl(&self, key: &str, ttl_secs: u64) -> Result<i64>;
     async fn delete(&self, key: &str) -> Result<()>;
+    /// Acquires a distributed lock.
+    async fn lock(&self, key: &str, ttl_secs: u64) -> Result<bool>;
+    /// Releases a distributed lock.
+    async fn unlock(&self, key: &str) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +84,14 @@ pub trait CacheTrait: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Template rendering (sync — pure string transformation).
+///
+/// # Errors
+///
+/// Returns `NotiError` if the template is not found or rendering fails.
 pub trait TemplateEngineTrait: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns `NotiError` if the template is not found or rendering fails.
     fn render(&self, template_id: &str, variables: &serde_json::Value) -> Result<String>;
 }
 
