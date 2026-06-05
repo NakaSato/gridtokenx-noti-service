@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::UserContext;
 
+#[allow(clippy::unused_async)]
 pub async fn health_check() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -22,6 +23,7 @@ pub async fn health_check() -> impl IntoResponse {
     )
 }
 
+#[allow(clippy::unused_async)]
 pub async fn health_live() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "alive" })))
 }
@@ -43,6 +45,9 @@ pub struct ListNotificationsResponse {
     pub total: usize,
 }
 
+/// # Errors
+///
+/// Returns an error if the user is unauthorized or the orchestrator call fails.
 pub async fn list_notifications(
     role: ServiceRole,
     user: UserContext,
@@ -52,8 +57,8 @@ pub async fn list_notifications(
     role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
         .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
 
-    let limit = params.limit.unwrap_or(20);
-    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = params.offset.unwrap_or(0).max(0);
 
     let notifications = state
         .orchestrator
@@ -76,6 +81,9 @@ pub async fn list_notifications(
     }))
 }
 
+/// # Errors
+///
+/// Returns an error if the user is unauthorized or the orchestrator call fails.
 pub async fn mark_notification_as_read(
     role: ServiceRole,
     user: UserContext,
@@ -94,6 +102,9 @@ pub async fn mark_notification_as_read(
     Ok(Json(json!({ "success": true })))
 }
 
+/// # Errors
+///
+/// Returns an error if the user is unauthorized or the orchestrator call fails.
 pub async fn mark_all_notifications_as_read(
     role: ServiceRole,
     user: UserContext,
