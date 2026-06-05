@@ -10,6 +10,10 @@ pub struct TemplateEngine {
 }
 
 impl TemplateEngine {
+    /// # Errors
+    ///
+    /// Returns an error if the Tera engine cannot be initialized from the
+    /// given templates directory path.
     pub fn new(templates_path: &str) -> std::result::Result<Self, anyhow::Error> {
         let mut tera = Tera::new(&format!("{templates_path}/**/*"))
             .map_err(|e| anyhow::anyhow!("Failed to initialize Tera engine: {e}"))?;
@@ -20,6 +24,11 @@ impl TemplateEngine {
     }
 
     /// Register a string-based template dynamically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the template name is duplicate or the content is
+    /// invalid Tera syntax.
     pub fn add_raw_template(&mut self, name: &str, content: &str) -> Result<()> {
         self.tera
             .add_raw_template(name, content)

@@ -1,0 +1,8 @@
+VPP Cluster Dispatch
+---------------------
+Cluster: {{ cluster_id }}
+Target: {{ target_kw }} kW
+Members Commanded: {{ members_count }}
+Timestamp: {{ now() | date(format="%Y-%m-%d %H:%M:%S") }}
+
+Optimization objective met via multi-objective dispatch (SOC/Price/Carbon).

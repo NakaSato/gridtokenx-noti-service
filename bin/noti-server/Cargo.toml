@@ -46,6 +46,5 @@ uuid.workspace = true
 quinn.workspace = true
 h3.workspace = true
 h3-quinn.workspace = true
-h3-axum.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true

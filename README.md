@@ -1,27 +1,28 @@
 # Notification Service (`gridtokenx-noti-service`)
 
-The **Notification Service** handles all outbound communications for the GridTokenX platform. It functions as a centralized, stateful notification dispatcher supporting multiple delivery channels (Email, WebSockets, SMS, Push notifications, and Webhooks) with built-in templating, rate-limiting, idempotency verification, and robust retry logic.
+The **Notification Service** handles all outbound communications for the GridTokenX platform. It functions as a centralized, stateful notification dispatcher supporting multiple delivery channels (Email, WebSockets, SMS, Push notifications, and Webhooks) with built-in HTML templating, rate-limiting, idempotency verification, and robust retry logic.
 
 ---
 
 ## 🏗️ Architecture
 
-The service is structured as a **Modular Monolith** Cargo workspace following the "Sync Core, Async Edges" design pattern. It enforces strict acyclic layering where dependencies flow downwards.
+The service is structured as a **Modular Monolith** Cargo workspace (Edition 2024, 6 crates) following the **"Sync Core, Async Edges"** design pattern with **hexagonal (ports-and-adapters)** architecture. It enforces strict acyclic layering where dependencies flow downwards.
 
-For a detailed view of the modular setup and design decisions, see the [Architecture Guide](ARCHITECTURE.md).
+For the full architecture reference, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```
 gridtokenx-noti-service/
 ├── bin/
-│   └── noti-server/           # Application entry point & service wiring (startup, telemetry, background consumers)
+│   └── noti-server/           # Application entry point, startup wiring, background consumers
 ├── crates/
-│   ├── noti-core/             # Core domain models, shared config, DI traits, and custom error types
-│   ├── noti-protocol/         # Protobuf definitions and generated ConnectRPC/gRPC wire contracts
-│   ├── noti-persistence/      # Database (SQLx/Pg), caching (Redis), message queues (RabbitMQ, Kafka), and providers
-│   ├── noti-logic/            # Core business logic (orchestrator execution, retry flow, template resolution)
-│   └── noti-api/              # REST, ConnectRPC/gRPC API controllers, and WebSocket handlers
+│   ├── noti-core/             # Domain models, config, 6 DI traits, NotiError (thiserror)
+│   ├── noti-protocol/         # ConnectRPC/gRPC wire contracts from proto/noti.proto
+│   ├── noti-persistence/      # SQLx Postgres (dual-pool), Redis, RabbitMQ, Kafka, SMTP, Tera, providers
+│   ├── noti-logic/            # NotificationOrchestrator — sync business rules (queue, dispatch, retry)
+│   └── noti-api/              # Axum REST, ConnectRPC, JWT auth, WebSocket registry
 ├── migrations/                # SQLx database schema migrations
-└── templates/                 # Localized email and WebSocket text/HTML templates (Tera)
+├── proto/                     # Protobuf service definition
+└── templates/                 # Tera email (HTML + plain text) and WebSocket templates
 ```
 
 ### Dependency Flow
@@ -48,6 +49,7 @@ graph TD
 
     Server --> API
     Server --> Persistence
+    Server --> Logic
     API --> Logic
     API --> Protocol
     Logic --> Core
@@ -59,88 +61,105 @@ graph TD
 
 ## 🚀 Key Features
 
-* **Multi-Channel Dispatcher:** Native handlers for **Email** (SMTP/Lettre), **WebSockets** (real-time notification pushing), and mocks for **SMS**, **Push**, and **Webhooks**.
-* **Template Engine:** Dynamically renders localized email and alert bodies using [Tera](https://tera.netlify.app/) (Jinja2-like templates).
-* **Robust Retry Strategy:** Leverages RabbitMQ's Dead-Letter Exchange (DLX) with message TTL to coordinate exponential backoff and retry logic without blocking worker threads.
-* **Event-Driven Intake:** Background Kafka consumer listens to key platform events (`UserRegistered`, `OrderMatched`, `ErcIssued`, etc.) to trigger automatic notification alerts.
-* **Real-time Push (WebSockets):** Active connection registry maps client sessions to system-driven notifications.
-* **HTTP/3 & QUIC Support:** Operates a concurrent HTTP/3 server over UDP alongside standard TCP ConnectRPC on the gRPC port.
-* **Idempotency & Caching:** Redis caching for compiled templates, fast idempotency checks (via idempotency keys), and rate-limiting limits.
+* **Multi-Channel Dispatcher:** Native handlers for **Email** (SMTP/Lettre with multipart HTML+text) and **WebSockets** (real-time push). Mock providers for **SMS**, **Push**, and **Webhooks**.
+* **HTML Email Templates:** Styled HTML templates with green/amber gradient design for welcome, verification, password reset, and ERC issuance emails. Automatic multipart generation (HTML + plain text fallback).
+* **Template Engine:** Dynamically renders email and alert bodies using [Tera](https://tera.netlify.app/) (Jinja2-like templates) with HTML autoescaping.
+* **Robust Retry Strategy:** RabbitMQ Dead-Letter Exchange (DLX) with message TTL for exponential backoff (2^n × 60s, max 5 retries) without blocking worker threads.
+* **Event-Driven Intake:** Background Kafka consumer listens to platform events (`UserRegistered`, `OrderMatched`, `ErcIssued`, `PasswordResetRequested`, `VerificationEmailRequested`, `UserOnboarded`, `MeterOnboarded`, `UserWalletLinked`) to trigger automatic notifications.
+* **URL Rewriting:** Email callback links are automatically rewritten from internal addresses (`localhost:4001`) to the configured frontend URL, preserving path and query parameters.
+* **Real-time Push (WebSockets):** Decoupled `ConnectionManager` (DashMap-based) with JWT-authenticated WebSocket sessions.
+* **Dual PostgreSQL Pools:** Separate high-priority (writes) and low-priority (reads) connection pools for query routing.
+* **HTTP/3 & QUIC Support:** Concurrent HTTP/3 server over UDP alongside TCP ConnectRPC on the gRPC port.
+* **Idempotency & Caching:** Redis for idempotency checks, distributed locks, and rate-limiting.
 
 ---
 
 ## 🔌 API Reference
 
 ### REST Endpoints
-The HTTP API serves on `PORT` (default: `8080`):
+
+The HTTP API serves on `PORT` (default: `8080`). All `/api/v1/` endpoints require `x-gridtokenx-user-id` header.
 
 | Endpoint | Method | Auth | Description |
 |:---|:---|:---|:---|
 | `/health` | `GET` | None | Service health status |
 | `/health/live` | `GET` | None | Service liveness probe |
-| `/api/v1/notifications` | `GET` | JWT | List notification history for the authenticated user |
-| `/api/v1/notifications/{id}` | `PATCH` | JWT | Mark a specific notification as read |
-| `/api/v1/notifications/mark-all-read` | `POST` | JWT | Mark all user notifications as read |
-| `/ws` | `GET` | JWT (query param) | Initiate a WebSocket session for real-time notification push |
+| `/api/v1/noti` | `GET` | Header | List notification history (params: `limit`, `offset`) |
+| `/api/v1/noti/{id}` | `PATCH` | Header | Mark a specific notification as read |
+| `/api/v1/noti/read-all` | `POST` | Header | Mark all user notifications as read |
+| `/ws?token=<jwt>` | `GET` | JWT | Initiate a WebSocket session for real-time push |
 
 ### gRPC / ConnectRPC Service
+
 Exposed on `PORT + 10` (default: `8090`):
 
-* `SendNotification`: Synchronous request/response endpoint to queue and trigger notifications (primarily for high-priority alerts like OTPs).
+* `SendNotification`: Queue and trigger notifications (channel, recipient, template, variables, idempotency key).
+* `GetNotificationStatus`: Look up delivery status of a notification by ID.
 
 ---
 
 ## ⚙️ Configuration
 
-The service loads settings from environment variables or YAML configuration files located in `config/` via the `config` crate.
+The service loads settings from environment variables or YAML configuration files in `config/` via the `config` crate.
 
 | Variable | Default | Purpose |
 |:---|:---|:---|
-| `PORT` | `8080` | Port for Axum HTTP REST server. gRPC server starts on `PORT + 10` |
+| `PORT` | `8080` | HTTP REST port. gRPC = `PORT + 10` |
 | `DATABASE_URL` | *Required* | PostgreSQL connection string |
-| `REDIS_URL` | *Required* | Redis connection string (cache, registry, rate-limiting) |
-| `KAFKA_BROKERS` | *Optional* | Comma-separated list of Kafka bootstrap brokers |
-| `RABBITMQ_URL` | *Optional* | RabbitMQ connection string for queuing/retries |
-| `JWT_SECRET` | *Required* | JWT secret to sign/validate websocket connections |
-| `SMTP_HOST` | *Optional* | Outbound SMTP server host (enables real email provider; uses mock if empty) |
-| `SMTP_PORT` | `587` | Outbound SMTP port |
+| `REDIS_URL` | *Required* | Redis connection string (cache, idempotency, locks) |
+| `KAFKA_BROKERS` | *Optional* | Comma-separated Kafka brokers. If empty → no Kafka consumer |
+| `KAFKA_TOPIC_USER_EVENTS` | `iam.user.events` | Kafka topic for user events |
+| `KAFKA_TOPIC_AUDIT_EVENTS` | `iam.audit.events` | Kafka topic for audit events |
+| `RABBITMQ_URL` | *Optional* | RabbitMQ connection string. If empty → in-process fallback |
+| `JWT_SECRET` | *Required* | JWT secret for WebSocket authentication |
+| `SMTP_HOST` | *Optional* | SMTP server host. If empty → mock email provider |
+| `SMTP_PORT` | `587` | SMTP port |
 | `SMTP_USER` | *Optional* | SMTP username |
 | `SMTP_PASS` | *Optional* | SMTP password |
-| `SMTP_FROM` | `no-reply@gridtokenx.com` | Email sender address |
-| `SMTP_TLS_MODE` | `starttls` | SMTP TLS mode: `starttls` (default), `tls` (implicit port 465), or `none` |
-| `CERT_FILE` | `infra/certs/server.crt` | Path to TLS certificate for HTTP/3 QUIC |
-| `KEY_FILE` | `infra/certs/server.key` | Path to TLS private key for HTTP/3 QUIC |
+| `SMTP_FROM` | `no-reply@gridtokenx.com` | Sender email address |
+| `SMTP_TLS_MODE` | `starttls` | `starttls`, `tls` (implicit, port 465), or `none` (Mailpit) |
+| `FRONTEND_URL` | *Optional* | Base URL for email callback links (e.g. `https://trading-ui.example.com/`) |
+| `CERT_FILE` | `infra/certs/server.crt` | TLS certificate for HTTP/3 QUIC |
+| `KEY_FILE` | `infra/certs/server.key` | TLS private key for HTTP/3 QUIC |
 
 ---
 
 ## 🛠️ Development
 
-### 1. Build and Test
-Run standard Cargo commands at the workspace root:
+### Build and Test
 
 ```bash
-# Build the workspace
-cargo build
-
-# Run unit and integration tests
-cargo test
+cargo build                              # Build entire workspace
+cargo check                              # Fast compile check
+cargo test                               # Run all tests
+cargo test -p noti-logic                 # Test a single crate
+cargo clippy -- -D warnings              # Lint (workspace: deny unsafe/unwrap, warn pedantic)
 ```
 
-### 2. Running Locally
-Spin up the service locally:
+### Running Locally
 
 ```bash
-# Run the noti-server bin
 cargo run --package noti-server
 ```
 
-### 3. Database Migrations
-We use `sqlx-cli` to manage database schema:
+### Database Migrations
 
 ```bash
-# Run pending migrations
-sqlx migrate run --database-url <DATABASE_URL>
-
-# Create a new migration file
-sqlx migrate add <migration_name>
+sqlx migrate run --database-url "$DATABASE_URL"
+sqlx migrate add <name>
 ```
+
+---
+
+## 📄 Event Types
+
+| Event | Channel | Template | Description |
+|:---|:---|:---|:---|
+| `UserRegistered` | Email | `welcome.html.tera` | Welcome email with feature list |
+| `OrderMatched` | WebSocket | `trade_matched.txt.tera` | Trade match alert to buyer and seller |
+| `ErcIssued` | Email | `erc_issued.html.tera` | Renewable Energy Certificate issuance |
+| `PasswordResetRequested` | Email | `password_reset.html.tera` | Password reset link with URL rewriting |
+| `VerificationEmailRequested` | Email | `verify_email.html.tera` | Email verification with URL rewriting |
+| `UserOnboarded` | WebSocket | `user_onboarded.txt.tera` | On-chain account creation confirmation |
+| `MeterOnboarded` | WebSocket | `meter_onboarded.txt.tera` | Smart meter registration confirmation |
+| `UserWalletLinked` | WebSocket | `security_alert.txt.tera` | Security alert for wallet linking |

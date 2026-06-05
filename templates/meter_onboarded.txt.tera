@@ -1,0 +1,9 @@
+Hello,
+
+Your smart meter has been successfully registered on the Solana blockchain.
+
+Meter ID: {{ meter_id }}
+Type: {{ meter_type }}
+Transaction: {{ transaction_signature }}
+
+Your energy generation and consumption will now be tracked and tokenized on-chain.

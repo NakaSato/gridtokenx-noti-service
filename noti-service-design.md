@@ -1,83 +1,103 @@
 # Design Spec: gridtokenx-noti-service
-**Date:** 2026-05-24  
-**Status:** Implemented  
+
+**Date:** 2026-05-24 (updated 2026-05-31)
+**Status:** Implemented
 **Topic:** Notification Service (Email, SMS, Webhook, Push, WebSocket)
 
 ---
 
 ## 1. Executive Summary
-The `gridtokenx-noti-service` is a centralized, stateful notification dispatcher designed to handle all outbound communication for the GridTokenX ecosystem. It provides a unified REST/ConnectRPC API and event-driven consumer loops for sending Email, SMS, Webhooks, Mobile/Web Push notifications, and real-time WebSocket alerts, maintaining a persistent audit trail and robust retry logic.
+
+The `gridtokenx-noti-service` is a centralized, stateful notification dispatcher for the GridTokenX ecosystem. It provides a unified REST/ConnectRPC API and event-driven consumer loops for sending Email (SMTP with multipart HTML+text), SMS, Webhooks, Push notifications, and real-time WebSocket alerts. Every notification is persisted in PostgreSQL with a full audit trail, idempotency protection via Redis, and exponential backoff retries via RabbitMQ DLX.
 
 ---
 
 ## 2. Goals & Success Criteria
-- **Multi-channel support:** Support Email (SMTP/lettre), SMS (Mock), Webhooks (Mock), Push (Mock), and WebSocket (Real-time).
-- **Auditability:** Every notification request, attempt, and final status must be persisted in PostgreSQL.
-- **Resilience:** Handle external provider failures with exponential backoff and retries via RabbitMQ.
-- **Idempotency:** Prevent duplicate notifications for the same event via unique idempotency keys.
-- **Observability:** Integrated with metrics (Prometheus) and logs (tracing).
+
+- **Multi-channel support:** Email (SMTP/lettre with HTML), SMS (Mock), Webhooks (Mock), Push (Mock), WebSocket (real-time).
+- **HTML email:** Styled HTML templates for all email channels with automatic multipart generation (HTML + plain text fallback).
+- **Auditability:** Every notification request, attempt, and final status persisted in PostgreSQL.
+- **Resilience:** Exponential backoff retries via RabbitMQ DLX (2^n × 60s, max 5 retries).
+- **Idempotency:** Prevent duplicate notifications via unique idempotency keys checked in Redis.
+- **URL rewriting:** Email callback links automatically rewritten from internal addresses to the configured frontend URL.
+- **Observability:** Prometheus metrics + structured JSON logging via `tracing`.
 
 ---
 
 ## 3. Architecture
-The service follows a "Stateful Unified Dispatcher" pattern, acting as a buffer between internal services and external providers.
+
+The service follows hexagonal (ports-and-adapters) architecture with "Sync Core, Async Edges" as a 6-crate modular monolith.
 
 ### 3.1 Components
+
 - **Inbound Adapters:**
-    - `NotificationGrpcService`: ConnectRPC/gRPC implementation for synchronous requests.
-    - `KafkaConsumer`: Subscribes to events on `iam.user.events` and `trading.trade.events`.
-    - `RabbitMQConsumer`: Processes the `noti.dispatch` queue for sending tasks.
+    - `NotificationGrpcService`: ConnectRPC/gRPC for synchronous `SendNotification` and `GetNotificationStatus` RPCs.
+    - `KafkaConsumer`: Subscribes to `iam.user.events` and `iam.audit.events`.
+    - `RabbitMQConsumer`: Processes the `noti.dispatch` queue for delivery tasks.
 - **Core Orchestrator:**
-    - `NotificationOrchestrator`: Validates requests, persists initial `Pending` state, resolved templates, and publishes delivery tasks.
-    - `TemplateEngine`: Substitutes variables into Tera templates.
+    - `NotificationOrchestrator`: Validates requests, persists `Pending` state, renders templates, selects providers, handles retry logic.
+    - `TemplateEngine`: Tera-based template rendering (sync, with HTML autoescaping).
 - **Provider Adapters:**
-    - `SmtpProvider`: Uses `lettre` for SMTP delivery.
-    - `WebSocketProvider`: Routes real-time alerts to connected browser/app client connections.
-    - `MockProvider` (SMS, Push, Webhooks): Logs messages to console (acting as development mocks).
+    - `SmtpProvider`: `lettre` SMTP with auto HTML detection → multipart/alternative or plain text.
+    - `WebSocketProvider`: Routes real-time alerts through decoupled `ConnectionManager`.
+    - `MockProvider` (SMS, Push, Webhooks, Email fallback): Logs to console.
 
 ### 3.2 Caching (Redis)
-Redis is utilized for high-performance transient state:
-- **Caching Service:** Stores cached metadata, templates, and idempotency states.
-- **WebSocket Registry:** Tracks active connection handles to route user-targeted push alerts directly.
 
-### 3.3 Queuing Strategy
-- **Kafka (External Event Source):** Consumes event logs (`iam.user.events` and `trading.trade.events`) to trigger user welcome messages, trade matches, and certificate issuances.
+Redis provides:
+- **Idempotency cache:** Key-value with TTL (3600s) to prevent duplicate processing.
+- **Distributed locks:** `SET NX EX` pattern for concurrency control.
+- **Rate limiting:** Atomic `INCR + EXPIRE` pipeline.
+
+### 3.3 Dual PostgreSQL Pool
+
+`NotificationRepository` uses two `PgPool` instances:
+
+| Pool | Connections | Used for |
+|:---|:---|:---|
+| **High-priority** | `database_max_connections` | Writes: create, update_status, increment_retry, mark_as_read, idempotency lookup, pending-for-retry |
+| **Low-priority** | `database_max_connections / 2` | Reads: get_by_id, list_by_user, get_unread_count |
+
+### 3.4 Queuing Strategy
+
+- **Kafka (External Event Source):** Consumes `iam.user.events` and `iam.audit.events`. Maps event types to notification templates and channels.
 - **RabbitMQ (Internal Tasks):**
-    - `noti.exchange`: Main direct exchange.
-    - `noti.dispatch`: Primary queue where immediately runnable dispatch tasks are queued.
-    - `noti.retry`: Delay queue utilizing RabbitMQ's message expiration (`expiration`/TTL) and dead-letter exchange configuration (`x-dead-letter-exchange = noti.exchange` & `x-dead-letter-routing-key = noti.dispatch`) to trigger asynchronous retries without blocking active threads.
+    - `noti.exchange`: Main Direct exchange.
+    - `noti.dispatch`: Primary dispatch queue.
+    - `noti.retry`: Delay queue with `x-dead-letter-exchange = noti.exchange` and `x-dead-letter-routing-key = noti.dispatch`. Messages include `expiration` header for TTL-based delay.
 
-### 3.4 Data Model (PostgreSQL)
+### 3.5 Data Model (PostgreSQL)
 
 ```sql
 CREATE TYPE notification_channel AS ENUM ('email', 'sms', 'push', 'webhook', 'websocket');
 
-CREATE TYPE notification_status AS ENUM ('pending', 'processing', 'sent', 'delivered', 'failed', 'permanent_failure');
+CREATE TYPE notification_status AS ENUM (
+    'pending', 'processing', 'sent', 'delivered', 'failed', 'permanent_failure'
+);
 
 CREATE TABLE notifications (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID, -- Optional
+    user_id UUID,                                        -- Optional (null for anonymous emails)
     channel notification_channel NOT NULL,
     status notification_status NOT NULL DEFAULT 'pending',
-    recipient TEXT NOT NULL, -- Email address, phone number, or webhook URL
-    template_id TEXT NOT NULL,
-    variables JSONB DEFAULT '{}',
-    provider_id TEXT, -- e.g., 'smtp', 'mock-sms'
-    provider_ref TEXT, -- ID from the external provider
+    recipient TEXT NOT NULL,                              -- Email, phone, wallet address, etc.
+    template_id TEXT NOT NULL,                            -- e.g. "welcome.html.tera"
+    variables JSONB DEFAULT '{}',                         -- Template context variables
+    provider_id TEXT,                                     -- e.g. 'smtp', 'mock-sms'
+    provider_ref TEXT,                                    -- External provider message ID
     retry_count INT DEFAULT 0,
     next_retry_at TIMESTAMPTZ DEFAULT NOW(),
     error_message TEXT,
     idempotency_key TEXT UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    sent_at TIMESTAMPTZ,
-    read_at TIMESTAMPTZ -- Added in migration 20260427000001
+    sent_at TIMESTAMPTZ,                                  -- Set when status = 'sent'
+    read_at TIMESTAMPTZ                                   -- NULL until user reads
 );
 
--- Indexes for performance
 CREATE INDEX idx_notifications_status_retry ON notifications(status, next_retry_at) WHERE status = 'pending';
 CREATE INDEX idx_notifications_user_id ON notifications(user_id);
-CREATE INDEX idx_notifications_user_unread ON notifications(user_id) WHERE read_at IS NULL; -- Added in migration 20260427000001
+CREATE INDEX idx_notifications_user_unread ON notifications(user_id) WHERE read_at IS NULL;
 ```
 
 ---
@@ -85,25 +105,74 @@ CREATE INDEX idx_notifications_user_unread ON notifications(user_id) WHERE read_
 ## 4. Workflows
 
 ### 4.1 Synchronous Request (gRPC/ConnectRPC)
-1. Client sends `SendNotification` call.
-2. Orchestrator checks `idempotency_key`.
-3. If new, persists record in `notifications` table as `Pending`.
-4. Publishes a `NotificationTask` to RabbitMQ's `noti.dispatch`.
-5. Returns `Result` immediately to client.
+
+1. Client sends `SendNotification` RPC with channel, recipient, template_id, variables, and optional idempotency_key.
+2. Orchestrator checks `idempotency_key` in Redis.
+3. If new, persists record as `Pending` in PostgreSQL.
+4. Publishes `NotificationTask` to RabbitMQ `noti.dispatch` (or spawns in-process fallback).
+5. Returns `NotificationResponse { notification_id, status: "accepted" }` immediately.
 
 ### 4.2 Event-Driven Request (Kafka)
-1. `KafkaConsumer` receives event payload:
-   - **`UserRegistered`**: Triggers welcome email (`welcome.txt.tera`).
-   - **`OrderMatched`**: Triggers WebSocket notification (`trade_matched.txt.tera`).
-   - **`ErcIssued`**: Triggers email notification (`erc_issued.txt.tera`).
-   - **`PasswordResetRequested`**: Triggers email (`password_reset.txt.tera`).
-   - **`VerificationEmailRequested`**: Triggers HTML email (`verify_email.html.tera`).
-2. Event data is mapped, notification saved as `Pending` with Kafka offset-based idempotency key.
-3. Task published to RabbitMQ.
 
-### 4.3 Retry Logic
-1. If delivery fails (e.g. SMTP server transient error):
-2. `retry_count` is incremented.
-3. Task published to RabbitMQ `noti.retry` with TTL based on exponential backoff delay.
-4. When TTL expires, RabbitMQ routes message back to `noti.dispatch` via DLX, and background consumer re-attempts delivery.
-5. If max retries exceeded, status is updated to `PermanentFailure`.
+1. `KafkaConsumer` receives event from `iam.user.events` or `iam.audit.events`.
+2. Event type is mapped to channel + template + variables:
+
+| Event Type | Channel | Template | Notes |
+|:---|:---|:---|:---|
+| `UserRegistered` | Email | `welcome.html.tera` | Styled welcome with feature list |
+| `OrderMatched` | WebSocket | `trade_matched.txt.tera` | Sent to both buyer and seller |
+| `ErcIssued` | Email | `erc_issued.html.tera` | Certificate card with amount |
+| `PasswordResetRequested` | Email | `password_reset.html.tera` | URL rewritten via `FRONTEND_URL` |
+| `VerificationEmailRequested` | Email | `verify_email.html.tera` | URL rewritten via `FRONTEND_URL` |
+| `UserOnboarded` | WebSocket | `user_onboarded.txt.tera` | PDA + transaction signature |
+| `MeterOnboarded` | WebSocket | `meter_onboarded.txt.tera` | Meter ID + type + tx signature |
+| `UserWalletLinked` | WebSocket | `security_alert.txt.tera` | Security alert with wallet address |
+
+3. Idempotency key derived from Kafka topic + partition + offset.
+4. URL rewriting: `consumers.rs` replaces the scheme+host+port of upstream URLs with `FRONTEND_URL` while preserving path and query string. If upstream provides only a token, constructs full URL from config.
+
+### 4.3 Dispatch (RabbitMQ Consumer)
+
+1. Consumer picks up `NotificationTask` from `noti.dispatch`.
+2. `orchestrator.dispatch(id)`:
+   - Marks status as `Processing`.
+   - Renders template via `TemplateEngineTrait::render()` (sync).
+   - Selects provider by `NotificationChannel`.
+   - `SmtpProvider` auto-detects HTML content → sends as `multipart/alternative` (HTML + stripped text) or plain text.
+   - On success: marks `Sent` + sets `sent_at = NOW()`.
+   - On failure with retries remaining: increments `retry_count`, calculates delay (`2^n × 60s`), publishes to `noti.retry` with TTL.
+   - On failure with max retries exceeded: marks `PermanentFailure`.
+
+### 4.4 Retry Path
+
+```
+Failed delivery
+  → increment_retry_count in DB
+  → publish_retry to RabbitMQ with expiration TTL
+  → TTL expires → DLX routes to noti.dispatch
+  → consumer re-attempts delivery
+  → repeat until success or max 5 retries → PermanentFailure
+```
+
+---
+
+## 5. URL Rewriting
+
+Email templates contain callback URLs (verification, password reset). Upstream services (e.g. IAM) may send URLs with internal addresses like `http://localhost:4001/verify?token=...`. When `FRONTEND_URL` is configured:
+
+1. **Upstream provides full URL:** `rewrite_url()` replaces `scheme://host:port` with `FRONTEND_URL`, preserving `/path?query`.
+2. **Upstream provides only token:** `build_callback_url()` constructs `{FRONTEND_URL}{path}?{query}` from scratch.
+3. **No `FRONTEND_URL` configured:** Passes through upstream URL as-is.
+
+---
+
+## 6. SMTP HTML Auto-Detection
+
+`SmtpProvider::send()` inspects the rendered content:
+
+- **Content starts with `<!DOCTYPE` or `<html`:** Sends as `multipart/alternative` with:
+  - `text/plain` part: stripped HTML via `html_to_text()` (removes scripts/styles/tags, decodes entities).
+  - `text/html` part: original rendered content.
+- **Otherwise:** Sends as `text/plain`.
+
+TLS modes: `starttls` (default, port 587), `tls` (implicit, port 465), `none` (no TLS, for local Mailpit testing).

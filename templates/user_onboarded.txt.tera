@@ -1,0 +1,8 @@
+Hello,
+
+Congratulations! Your GridTokenX account has been successfully onboarded to the Solana blockchain.
+
+Identity PDA: {{ user_account_pda }}
+Transaction: {{ transaction_signature }}
+
+You can now participate in P2P energy trading and earn GRX tokens.

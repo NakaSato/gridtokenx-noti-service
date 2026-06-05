@@ -22,10 +22,9 @@ where
             .headers
             .get(USER_ID_HEADER)
             .and_then(|v| v.to_str().ok())
+            && let Ok(user_id) = Uuid::parse_str(user_id_str)
         {
-            if let Ok(user_id) = Uuid::parse_str(user_id_str) {
-                return Ok(UserContext { user_id });
-            }
+            return Ok(UserContext { user_id });
         }
 
         Err((

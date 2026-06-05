@@ -1,6 +1,6 @@
 //! # noti-server
 //!
-//! Binary entrypoint and wiring for the GridTokenX Notification Service.
+//! Binary entrypoint and wiring for the `GridTokenX` Notification Service.
 
 pub mod consumers;
 pub mod startup;

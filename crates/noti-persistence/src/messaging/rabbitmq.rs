@@ -1,4 +1,4 @@
-//! RabbitMQ client implementing `MessageQueueTrait` for dispatch / retry queues.
+//! `RabbitMQ` client implementing `MessageQueueTrait` for dispatch / retry queues.
 //!
 //! This module only handles **publishing**. Consumer logic lives in `noti-server`
 //! to avoid a circular dependency with `noti-logic`.
@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use lapin::{
     BasicProperties, Connection, ConnectionProperties, ExchangeKind,
-    options::*,
+    options::{BasicPublishOptions, ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions},
     types::{AMQPValue, FieldTable, ShortString},
 };
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,10 @@ pub struct RabbitMQClient {
 }
 
 impl RabbitMQClient {
+    /// # Errors
+    ///
+    /// Returns an error if the connection to `RabbitMQ` fails or topology
+    /// declaration (exchange, queues, bindings) fails.
     pub async fn new(url: &str) -> anyhow::Result<Self> {
         let connection = Connection::connect(url, ConnectionProperties::default()).await?;
         let channel = connection.create_channel().await?;
@@ -83,6 +87,7 @@ impl RabbitMQClient {
     }
 
     /// Returns a reference to the underlying lapin channel for consumer setup.
+    #[must_use]
     pub fn channel(&self) -> &lapin::Channel {
         &self.channel
     }
@@ -146,6 +151,7 @@ impl MessageQueueTrait for RabbitMQClient {
             notification_id,
             retry_count: 1,
         };
-        self.publish_task(&task, (delay_ms / 60000) as i32).await
+        self.publish_task(&task, (delay_ms / 60000).cast_signed())
+            .await
     }
 }

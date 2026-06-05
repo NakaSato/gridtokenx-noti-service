@@ -91,11 +91,11 @@ lapin = "2.5"
 redis = { version = "0.32", features = ["tokio-comp", "connection-manager"] }
 
 # gRPC / ConnectRPC
-connectrpc = { version = "0.2.1", features = ["axum", "server", "client"] }
+connectrpc = { version = "0.6.1", features = ["axum", "server", "client"] }
 prost = "0.13"
 tonic = { version = "0.12.3", features = ["tls-native-roots"] }
-buffa = "0.2.0"
-buffa-types = "0.2.0"
+buffa = "0.6.0"
+buffa-types = "0.6.0"
 http-body = "1.0.0"
 http = "1.0.0"
 
@@ -103,7 +103,6 @@ http = "1.0.0"
 quinn = { version = "0.11", features = ["rustls"] }
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
-h3-axum = "0.2.0"
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2.0"
 
@@ -123,8 +122,8 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 gridtokenx-blockchain-core = { path = "../gridtokenx-blockchain-core" }
 
 # Build dependencies
-buffa-build = "0.2.0"
-connectrpc-build = "0.2.0"
+buffa-build = "0.6.0"
+connectrpc-build = "0.6.1"
 prost-build = "0.13"
 tonic-build = "0.12.3"
 

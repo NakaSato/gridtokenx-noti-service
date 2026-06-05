@@ -72,13 +72,13 @@ test_endpoint "GET" "$REST_URL/health/live" 200
 # 2. REST Notification APIs
 echo "Checking REST Authorization requirements:"
 # Should return 401 Unauthorized since x-gridtokenx-user-id header is missing
-test_endpoint "GET" "$REST_URL/api/v1/notifications" 401
+test_endpoint "GET" "$REST_URL/api/v1/noti" 401
 
 # Authorized GET notifications list
-test_endpoint "GET" "$REST_URL/api/v1/notifications" 200 "-H 'x-gridtokenx-user-id: $USER_ID' -H 'x-gridtokenx-role: admin'"
+test_endpoint "GET" "$REST_URL/api/v1/noti" 200 "-H 'x-gridtokenx-user-id: $USER_ID' -H 'x-gridtokenx-role: admin'"
 
 # Authorized mark-all-read
-test_endpoint "POST" "$REST_URL/api/v1/notifications/mark-all-read" 200 "-H 'x-gridtokenx-user-id: $USER_ID' -H 'x-gridtokenx-role: admin'"
+test_endpoint "POST" "$REST_URL/api/v1/noti/read-all" 200 "-H 'x-gridtokenx-user-id: $USER_ID' -H 'x-gridtokenx-role: admin'"
 
 # 3. ConnectRPC / gRPC Endpoints via standard JSON
 echo "Testing ConnectRPC Endpoints (HTTP JSON):"

@@ -1,0 +1,9 @@
+SECURITY ALERT: New Wallet Linked
+
+A new Solana wallet has been linked to your GridTokenX account.
+
+Wallet Address: {{ wallet_address }}
+On-Chain Status: Registered (Shard {{ shard_id }})
+Transaction: {{ transaction_signature }}
+
+If you did not perform this action, please contact support immediately.

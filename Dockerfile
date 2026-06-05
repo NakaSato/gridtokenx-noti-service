@@ -5,7 +5,7 @@
 FROM rust:1.89-bookworm AS builder
 
 # Install build dependencies with cache mount
-RUN --mount=type=cache,target=/var/lib/apt/lists <<EOT
+RUN <<EOT
     apt-get update
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -15,7 +15,8 @@ RUN --mount=type=cache,target=/var/lib/apt/lists <<EOT
         clang \
         git \
         curl \
-        protobuf-compiler
+        protobuf-compiler \
+        libprotobuf-dev
 EOT
 
 WORKDIR /app
@@ -39,7 +40,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
-RUN --mount=type=cache,target=/var/lib/apt/lists <<EOT
+RUN <<EOT
     apt-get update
     apt-get install -y --no-install-recommends \
         ca-certificates \
