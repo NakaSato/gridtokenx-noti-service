@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
@@ -57,6 +57,11 @@ impl NotificationOrchestrator {
 
     /// Accept a notification request: persist, cache idempotency key,
     /// and trigger async dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the repository call fails or the notification
+    /// cannot be persisted.
     pub async fn queue_notification(
         self: &Arc<Self>,
         user_id: Option<Uuid>,
@@ -66,14 +71,8 @@ impl NotificationOrchestrator {
         variables: serde_json::Value,
         idempotency_key: Option<String>,
     ) -> Result<Uuid> {
-        // 1. Check idempotency
-        if let Some(ref key) = idempotency_key {
-            if let Some(existing) = self.repo.get_by_idempotency_key(key).await? {
-                return Ok(existing.id);
-            }
-        }
-
-        // 2. Create notification record
+        // 1. Create notification record atomically. The repository returns an
+        // existing row when idempotency_key conflicts, preventing duplicate sends.
         let notification = Notification {
             id: Uuid::new_v4(),
             user_id,
@@ -94,19 +93,27 @@ impl NotificationOrchestrator {
             read_at: None,
         };
 
-        let id = notification.id;
-        self.repo.create(&notification).await?;
+        let requested_id = notification.id;
+        let saved_notification = self.repo.create(&notification).await?;
+        let id = saved_notification.id;
 
-        // 3. Cache idempotency key in Redis
-        if let Some(ref key) = idempotency_key {
-            let cache_key = format!("idempotency:{key}");
-            let _ = self
-                .cache
-                .set_value(&cache_key, serde_json::json!(id), 3600)
-                .await;
+        if id != requested_id {
+            return Ok(id);
         }
 
-        // 4. Trigger dispatch via MQ or background task
+        // 2. Cache idempotency key in Redis
+        if let Some(ref key) = idempotency_key {
+            let cache_key = format!("idempotency:{key}");
+            if let Err(e) = self
+                .cache
+                .set_value(&cache_key, serde_json::json!(id), 3600)
+                .await
+            {
+                warn!("Failed to cache idempotency key for {id}: {e}");
+            }
+        }
+
+        // 3. Trigger dispatch via MQ or background task
         if let Some(ref mq) = self.mq {
             if let Err(e) = mq.publish_dispatch(id).await {
                 error!("Failed to publish dispatch task to MQ for {}: {}", id, e);
@@ -130,6 +137,11 @@ impl NotificationOrchestrator {
 
     /// Deliver a single notification by ID: render template → select
     /// provider → send → update status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the notification is not found, template rendering
+    /// fails, or the provider rejects the delivery.
     pub async fn dispatch(self: Arc<Self>, id: Uuid) -> Result<()> {
         let notification = self
             .repo
@@ -202,7 +214,8 @@ impl NotificationOrchestrator {
                         .await?;
                 } else {
                     let retry_count = notification.retry_count + 1;
-                    let delay_ms = u32::from(2u16.saturating_pow(retry_count as u32)) * 60 * 1000;
+                    let delay_ms =
+                        u32::from(2u16.saturating_pow(retry_count.unsigned_abs())) * 60 * 1000;
                     let next_retry_at =
                         Utc::now() + chrono::Duration::milliseconds(i64::from(delay_ms));
 
@@ -212,8 +225,17 @@ impl NotificationOrchestrator {
                         .await?;
 
                     if let Some(ref mq) = self.mq {
-                        let _ = mq.publish_retry(id, delay_ms).await;
+                        if let Err(schedule_error) = mq.publish_retry(id, delay_ms).await {
+                            error!(
+                                "Failed to publish retry for notification {id}: {schedule_error}; falling back to in-process retry"
+                            );
+                            self.clone().spawn_in_process_retry(id, delay_ms);
+                        }
+                    } else {
+                        let orchestrator = self.clone();
+                        orchestrator.spawn_in_process_retry(id, delay_ms);
                     }
+                    return Ok(());
                 }
                 Err(e)
             }
@@ -221,12 +243,19 @@ impl NotificationOrchestrator {
     }
 
     /// Look up the current status of a notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the repository call fails.
     pub async fn get_status(&self, id: Uuid) -> Result<Option<Notification>> {
         self.repo.get_by_id(id).await
     }
 
     // ── User-facing Operations ───────────────────────────────────────────────
 
+    /// # Errors
+    ///
+    /// Returns an error if the repository call fails.
     pub async fn list_user_notifications(
         &self,
         user_id: Uuid,
@@ -236,16 +265,34 @@ impl NotificationOrchestrator {
         self.repo.list_by_user(user_id, limit, offset).await
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the repository call fails.
     pub async fn mark_as_read(&self, id: Uuid, user_id: Uuid) -> Result<()> {
         self.repo.mark_as_read(id, user_id).await
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the repository call fails.
     pub async fn mark_all_as_read(&self, user_id: Uuid) -> Result<()> {
         self.repo.mark_all_as_read(user_id).await
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the repository call fails.
     pub async fn get_unread_count(&self, user_id: Uuid) -> Result<i64> {
         self.repo.get_unread_count(user_id).await
+    }
+
+    fn spawn_in_process_retry(self: Arc<Self>, id: Uuid, delay_ms: u32) {
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(u64::from(delay_ms))).await;
+            if let Err(e) = self.dispatch(id).await {
+                error!("Failed to retry notification {id}: {e}");
+            }
+        });
     }
 }
 
@@ -261,9 +308,22 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl NotificationRepositoryTrait for MockRepo {
-        async fn create(&self, n: &Notification) -> Result<()> {
-            self.saved.lock().unwrap().push(n.clone());
-            Ok(())
+        async fn create(&self, n: &Notification) -> Result<Notification> {
+            let mut saved = self
+                .saved
+                .lock()
+                .map_err(|e| NotiError::Internal(format!("mock repo lock poisoned: {e}")))?;
+
+            if let Some(key) = &n.idempotency_key
+                && let Some(existing) = saved
+                    .iter()
+                    .find(|notification| notification.idempotency_key.as_ref() == Some(key))
+            {
+                return Ok(existing.clone());
+            }
+
+            saved.push(n.clone());
+            Ok(n.clone())
         }
         async fn get_by_id(&self, _id: Uuid) -> Result<Option<Notification>> {
             Ok(None)
@@ -319,6 +379,12 @@ mod tests {
         async fn delete(&self, _k: &str) -> Result<()> {
             Ok(())
         }
+        async fn lock(&self, _k: &str, _t: u64) -> Result<bool> {
+            Ok(true)
+        }
+        async fn unlock(&self, _k: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct MockTemplate;
@@ -339,10 +405,17 @@ mod tests {
         }
     }
 
-    struct MockMq;
+    struct MockMq {
+        dispatches: Mutex<Vec<Uuid>>,
+    }
+
     #[async_trait::async_trait]
     impl MessageQueueTrait for MockMq {
-        async fn publish_dispatch(&self, _id: Uuid) -> Result<()> {
+        async fn publish_dispatch(&self, id: Uuid) -> Result<()> {
+            self.dispatches
+                .lock()
+                .map_err(|e| NotiError::Internal(format!("mock mq lock poisoned: {e}")))?
+                .push(id);
             Ok(())
         }
         async fn publish_retry(&self, _id: Uuid, _d: u32) -> Result<()> {
@@ -351,7 +424,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_queue_notification() {
+    async fn test_queue_notification() -> Result<()> {
         let repo = Arc::new(MockRepo {
             saved: Mutex::new(vec![]),
         });
@@ -362,7 +435,9 @@ mod tests {
         let p_push = Arc::new(MockProvider);
         let p_web = Arc::new(MockProvider);
         let p_ws = Arc::new(MockProvider);
-        let mq = Arc::new(MockMq);
+        let mq = Arc::new(MockMq {
+            dispatches: Mutex::new(vec![]),
+        });
 
         let orchestrator = Arc::new(NotificationOrchestrator::new(
             repo.clone(),
@@ -385,11 +460,79 @@ mod tests {
                 json!({}),
                 None,
             )
-            .await
-            .unwrap();
+            .await?;
 
-        let saved = repo.saved.lock().unwrap();
+        let saved = repo
+            .saved
+            .lock()
+            .map_err(|e| NotiError::Internal(format!("mock repo lock poisoned: {e}")))?;
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].id, id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_queue_notification_deduplicates_idempotency_key() -> Result<()> {
+        let repo = Arc::new(MockRepo {
+            saved: Mutex::new(vec![]),
+        });
+        let cache = Arc::new(MockCache);
+        let template = Arc::new(MockTemplate);
+        let p_email = Arc::new(MockProvider);
+        let p_sms = Arc::new(MockProvider);
+        let p_push = Arc::new(MockProvider);
+        let p_web = Arc::new(MockProvider);
+        let p_ws = Arc::new(MockProvider);
+        let mq = Arc::new(MockMq {
+            dispatches: Mutex::new(vec![]),
+        });
+
+        let orchestrator = Arc::new(NotificationOrchestrator::new(
+            repo.clone(),
+            template,
+            p_email,
+            p_sms,
+            p_push,
+            p_web,
+            p_ws,
+            cache,
+            Some(mq.clone()),
+        ));
+
+        let first_id = orchestrator
+            .queue_notification(
+                None,
+                NotificationChannel::Email,
+                "test@example.com".to_string(),
+                "welcome".to_string(),
+                json!({}),
+                Some("same-key".to_string()),
+            )
+            .await?;
+
+        let second_id = orchestrator
+            .queue_notification(
+                None,
+                NotificationChannel::Email,
+                "test@example.com".to_string(),
+                "welcome".to_string(),
+                json!({}),
+                Some("same-key".to_string()),
+            )
+            .await?;
+
+        let saved = repo
+            .saved
+            .lock()
+            .map_err(|e| NotiError::Internal(format!("mock repo lock poisoned: {e}")))?;
+        let dispatches = mq
+            .dispatches
+            .lock()
+            .map_err(|e| NotiError::Internal(format!("mock mq lock poisoned: {e}")))?;
+
+        assert_eq!(first_id, second_id);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(dispatches.len(), 1);
+        Ok(())
     }
 }
