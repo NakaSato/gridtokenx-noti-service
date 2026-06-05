@@ -13,6 +13,10 @@ pub struct SmtpProvider {
 }
 
 impl SmtpProvider {
+    /// # Errors
+    ///
+    /// Returns an error if the SMTP host string is invalid for the selected
+    /// relay builder.
     pub fn new(
         host: &str,
         port: u16,
@@ -20,15 +24,14 @@ impl SmtpProvider {
         password: Option<String>,
         from_email: String,
         tls_mode: Option<&str>,
-    ) -> Self {
-        let effective_mode =
-            tls_mode.unwrap_or_else(|| if port == 465 { "tls" } else { "starttls" });
+    ) -> anyhow::Result<Self> {
+        let effective_mode = tls_mode.unwrap_or(if port == 465 { "tls" } else { "starttls" });
 
         let mut builder = match effective_mode {
-            "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(host).expect("Valid SMTP host"),
-            "starttls" => {
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).expect("Valid SMTP host")
-            }
+            "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(host)
+                .map_err(|e| anyhow::anyhow!("Invalid SMTP TLS relay host '{host}': {e}"))?,
+            "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+                .map_err(|e| anyhow::anyhow!("Invalid SMTP STARTTLS relay host '{host}': {e}"))?,
             "none" | "insecure" => {
                 // No TLS - suitable for local testing with Mailpit
                 AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host).port(port)
@@ -38,7 +41,9 @@ impl SmtpProvider {
                     "Unknown SMTP TLS mode: {}, falling back to starttls",
                     effective_mode
                 );
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).expect("Valid SMTP host")
+                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).map_err(|e| {
+                    anyhow::anyhow!("Invalid SMTP STARTTLS relay host '{host}': {e}")
+                })?
             }
         };
 
@@ -53,10 +58,10 @@ impl SmtpProvider {
 
         let transport = builder.build();
 
-        Self {
+        Ok(Self {
             transport,
             from_email,
-        }
+        })
     }
 }
 
@@ -72,6 +77,10 @@ impl NotificationProviderTrait for SmtpProvider {
         let email = if is_html {
             // Extract text fallback from HTML content (simple stripping)
             let text_fallback = html_to_text(content);
+            let plain_content_type = ContentType::parse("text/plain; charset=utf-8")
+                .map_err(|e| NotiError::Internal(format!("Invalid plain content type: {e}")))?;
+            let html_content_type = ContentType::parse("text/html; charset=utf-8")
+                .map_err(|e| NotiError::Internal(format!("Invalid HTML content type: {e}")))?;
 
             Message::builder()
                 .from(
@@ -87,12 +96,12 @@ impl NotificationProviderTrait for SmtpProvider {
                     MultiPart::alternative()
                         .singlepart(
                             SinglePart::builder()
-                                .header(ContentType::parse("text/plain; charset=utf-8").unwrap())
+                                .header(plain_content_type)
                                 .body(text_fallback),
                         )
                         .singlepart(
                             SinglePart::builder()
-                                .header(ContentType::parse("text/html; charset=utf-8").unwrap())
+                                .header(html_content_type)
                                 .body(content.to_string()),
                         ),
                 )
@@ -133,15 +142,21 @@ impl NotificationProviderTrait for SmtpProvider {
     }
 }
 
-/// Simple HTML to text conversion for email fallback
+/// Simple HTML to text conversion for email fallback.
 fn html_to_text(html: &str) -> String {
+    // SAFETY: These regex patterns are compile-time verified string literals.
+    static RE_SCRIPT_STYLE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?s)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>")
+            .expect("valid regex")
+    });
+    static RE_TAGS: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"<[^>]*>").expect("valid regex"));
+
     // Remove script and style elements
-    let re = regex::Regex::new(r"(?s)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>").unwrap();
-    let text = re.replace_all(html, "");
+    let text = RE_SCRIPT_STYLE.replace_all(html, "");
 
     // Remove all HTML tags
-    let re = regex::Regex::new(r"<[^>]*>").unwrap();
-    let text = re.replace_all(&text, "");
+    let text = RE_TAGS.replace_all(&text, "");
 
     // Decode HTML entities
     let text = text
@@ -153,12 +168,9 @@ fn html_to_text(html: &str) -> String {
         .replace("&nbsp;", " ");
 
     // Clean up whitespace
-    let text = text
-        .lines()
-        .map(|line| line.trim())
+    text.lines()
+        .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
-        .join("\n\n");
-
-    text
+        .join("\n\n")
 }
