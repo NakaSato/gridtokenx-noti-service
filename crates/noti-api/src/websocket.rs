@@ -31,39 +31,77 @@ pub struct JwtSecret(pub String);
 
 /// Manages active WebSocket connections indexed by User ID.
 pub struct ConnectionManager {
-    connections: DashMap<Uuid, mpsc::Sender<String>>,
+    connections: DashMap<Uuid, DashMap<Uuid, mpsc::Sender<String>>>,
 }
 
 #[async_trait]
 impl WebSocketRegistryTrait for ConnectionManager {
     async fn send_to_user(&self, user_id: &uuid::Uuid, message: &str) -> Result<bool> {
-        if let Some(tx) = self.connections.get(user_id) {
-            let tx: &mpsc::Sender<String> = tx.value();
+        let Some(user_connections) = self.connections.get(user_id) else {
+            return Ok(false);
+        };
+
+        let senders: Vec<(Uuid, mpsc::Sender<String>)> = user_connections
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().clone()))
+            .collect();
+        drop(user_connections);
+
+        let mut delivered = false;
+        for (connection_id, tx) in senders {
             if let Err(e) = tx.send(message.to_string()).await {
-                warn!("🌐 Failed to send WS message to user {}: {}", user_id, e);
-                return Ok(false);
+                warn!(
+                    "🌐 Failed to send WS message to user {} connection {}: {}",
+                    user_id, connection_id, e
+                );
+                self.remove_connection(user_id, &connection_id);
+            } else {
+                delivered = true;
             }
-            return Ok(true);
         }
-        Ok(false)
+
+        Ok(delivered)
     }
 }
 
 impl ConnectionManager {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             connections: DashMap::new(),
         }
     }
 
-    pub fn add_connection(&self, user_id: Uuid, tx: mpsc::Sender<String>) {
-        self.connections.insert(user_id, tx);
-        info!("🌐 Added WS connection for user {}", user_id);
+    pub fn add_connection(&self, user_id: Uuid, tx: mpsc::Sender<String>) -> Uuid {
+        let connection_id = Uuid::new_v4();
+        self.connections
+            .entry(user_id)
+            .or_default()
+            .insert(connection_id, tx);
+        info!(
+            "🌐 Added WS connection {} for user {}",
+            connection_id, user_id
+        );
+        connection_id
     }
 
-    pub fn remove_connection(&self, user_id: &Uuid) {
-        self.connections.remove(user_id);
-        info!("🌐 Removed WS connection for user {}", user_id);
+    pub fn remove_connection(&self, user_id: &Uuid, connection_id: &Uuid) {
+        let Some(user_connections) = self.connections.get(user_id) else {
+            return;
+        };
+
+        user_connections.remove(connection_id);
+        let is_empty = user_connections.is_empty();
+        drop(user_connections);
+
+        if is_empty {
+            self.connections.remove(user_id);
+        }
+
+        info!(
+            "🌐 Removed WS connection {} for user {}",
+            connection_id, user_id
+        );
     }
 }
 
@@ -74,6 +112,7 @@ impl Default for ConnectionManager {
 }
 
 /// Axum handler for WebSocket upgrades.
+#[allow(clippy::unused_async)]
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<WsQuery>,
@@ -100,7 +139,7 @@ pub async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, manager: Arc<ConnectionManager>, user_id: Uuid) {
     let (tx, mut rx) = mpsc::channel::<String>(100);
 
-    manager.add_connection(user_id, tx);
+    let connection_id = manager.add_connection(user_id, tx);
 
     loop {
         tokio::select! {
@@ -128,5 +167,33 @@ async fn handle_socket(mut socket: WebSocket, manager: Arc<ConnectionManager>, u
         }
     }
 
-    manager.remove_connection(&user_id);
+    manager.remove_connection(&user_id, &connection_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connection_manager_sends_to_multiple_connections() -> Result<()> {
+        let manager = ConnectionManager::new();
+        let user_id = Uuid::new_v4();
+        let (tx1, mut rx1) = mpsc::channel::<String>(1);
+        let (tx2, mut rx2) = mpsc::channel::<String>(1);
+
+        let connection_id_1 = manager.add_connection(user_id, tx1);
+        manager.add_connection(user_id, tx2);
+
+        assert!(manager.send_to_user(&user_id, "hello").await?);
+        assert_eq!(rx1.recv().await.as_deref(), Some("hello"));
+        assert_eq!(rx2.recv().await.as_deref(), Some("hello"));
+
+        manager.remove_connection(&user_id, &connection_id_1);
+
+        assert!(manager.send_to_user(&user_id, "again").await?);
+        assert_eq!(rx1.recv().await, None);
+        assert_eq!(rx2.recv().await.as_deref(), Some("again"));
+
+        Ok(())
+    }
 }
