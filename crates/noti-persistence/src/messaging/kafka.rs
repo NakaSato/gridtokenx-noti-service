@@ -8,11 +8,16 @@ use rdkafka::config::ClientConfig;
 use rdkafka::consumer::StreamConsumer;
 
 /// Create a configured `StreamConsumer` ready to subscribe.
+///
+/// # Errors
+///
+/// Returns an error if the Kafka client configuration is invalid or
+/// the consumer cannot be created.
 pub fn create_consumer(brokers: &str, group_id: &str) -> anyhow::Result<StreamConsumer> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
         .set("group.id", group_id)
-        .set("enable.auto.commit", "true")
+        .set("enable.auto.commit", "false")
         .set("auto.offset.reset", "earliest")
         .create()?;
 
