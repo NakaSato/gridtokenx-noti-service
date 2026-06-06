@@ -27,6 +27,7 @@ noti-protocol = { path = "crates/noti-protocol" }
 noti-persistence = { path = "crates/noti-persistence" }
 noti-logic = { path = "crates/noti-logic" }
 noti-api = { path = "crates/noti-api" }
+gridtokenx-telemetry = { path = "../gridtokenx-telemetry" }
 
 # Async Runtime
 tokio = { version = "1.48", features = [
@@ -120,6 +121,9 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 
 # Blockchain (Shared)
 gridtokenx-blockchain-core = { path = "../gridtokenx-blockchain-core" }
+
+# Test
+mockall = "0.13"
 
 # Build dependencies
 buffa-build = "0.6.0"

@@ -17,3 +17,7 @@ chrono.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+noti-core = { workspace = true, features = ["mocks"] }
+mockall.workspace = true

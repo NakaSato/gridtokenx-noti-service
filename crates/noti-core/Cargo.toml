@@ -14,3 +14,13 @@ uuid.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 config.workspace = true
+
+[features]
+mocks = ["mockall"]
+
+[dev-dependencies]
+mockall.workspace = true
+
+[dependencies.mockall]
+workspace = true
+optional = true
