@@ -16,6 +16,7 @@ noti-protocol.workspace = true
 noti-persistence.workspace = true
 noti-logic.workspace = true
 noti-api.workspace = true
+gridtokenx-telemetry.workspace = true
 
 tokio.workspace = true
 tokio-util.workspace = true
@@ -39,6 +40,7 @@ http.workspace = true
 rdkafka.workspace = true
 lapin.workspace = true
 
+serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 
