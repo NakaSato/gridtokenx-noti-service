@@ -115,6 +115,9 @@ mod tests {
         async fn get_pending_for_retry(&self, _limit: i32) -> Result<Vec<Notification>> {
             Ok(vec![])
         }
+        async fn reset_stuck_processing(&self, _threshold: i64) -> Result<u64> {
+            Ok(0)
+        }
         async fn list_by_user(&self, _u: Uuid, _l: i64, _o: i64) -> Result<Vec<Notification>> {
             Ok(vec![])
         }

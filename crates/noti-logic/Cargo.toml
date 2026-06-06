@@ -20,4 +20,6 @@ anyhow.workspace = true
 
 [dev-dependencies]
 noti-core = { workspace = true, features = ["mocks"] }
+noti-persistence.workspace = true
 mockall.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }

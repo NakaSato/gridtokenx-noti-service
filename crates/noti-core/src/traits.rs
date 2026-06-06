@@ -30,6 +30,10 @@ pub trait NotificationRepositoryTrait: Send + Sync {
     ) -> Result<()>;
     async fn increment_retry(&self, id: Uuid, next_retry_at: DateTime<Utc>) -> Result<()>;
     async fn get_pending_for_retry(&self, limit: i32) -> Result<Vec<Notification>>;
+    /// Reset rows stuck in `Processing` for longer than `stuck_threshold_secs`
+    /// (e.g. a crash mid-dispatch) back to `Pending`, due immediately, so a
+    /// boot-time sweep re-dispatches them. Returns the number of rows reset.
+    async fn reset_stuck_processing(&self, stuck_threshold_secs: i64) -> Result<u64>;
 
     // User-facing operations
     async fn list_by_user(

@@ -275,6 +275,23 @@ impl NotificationRepositoryTrait for NotificationRepository {
         Ok(())
     }
 
+    async fn reset_stuck_processing(&self, stuck_threshold_secs: i64) -> Result<u64> {
+        let res = sqlx::query(
+            r"
+            UPDATE notifications
+            SET status = 'pending', next_retry_at = NOW(), updated_at = NOW()
+            WHERE status = 'processing'
+              AND updated_at < NOW() - ($1 * interval '1 second')
+            ",
+        )
+        .bind(stuck_threshold_secs)
+        .execute(&self.high_priority_pool)
+        .await
+        .map_err(NotiError::database)?;
+
+        Ok(res.rows_affected())
+    }
+
     async fn get_pending_for_retry(&self, limit: i32) -> Result<Vec<Notification>> {
         let res = sqlx::query_as::<_, NotificationRow>(
             r"

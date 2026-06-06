@@ -71,6 +71,15 @@ impl NotificationOrchestrator {
         }
 
         // 3. Trigger dispatch via MQ or background task
+        self.trigger_dispatch(id).await;
+
+        Ok(id)
+    }
+
+    /// Trigger delivery of an already-persisted notification: publish a
+    /// dispatch task to the durable queue, falling back to an in-process
+    /// `tokio::spawn` if MQ is absent or the publish fails.
+    pub(super) async fn trigger_dispatch(self: &Arc<Self>, id: Uuid) {
         if let Some(ref mq) = self.mq {
             if let Err(e) = mq.publish_dispatch(id).await {
                 error!("Failed to publish dispatch task to MQ for {}: {}", id, e);
@@ -88,7 +97,31 @@ impl NotificationOrchestrator {
                 }
             });
         }
+    }
 
-        Ok(id)
+    /// Boot-time crash recovery: reset rows stuck in `Processing` (a crash
+    /// mid-dispatch left them) back to `Pending`, then re-dispatch every
+    /// currently-due `Pending` row. Returns the number re-queued for dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a repository call fails.
+    pub async fn recover_pending(
+        self: &Arc<Self>,
+        stuck_threshold_secs: i64,
+        batch_limit: i32,
+    ) -> Result<usize> {
+        let reset = self.repo.reset_stuck_processing(stuck_threshold_secs).await?;
+        if reset > 0 {
+            warn!("Recovery: reset {reset} stuck 'processing' notification(s) to pending");
+        }
+
+        let due = self.repo.get_pending_for_retry(batch_limit).await?;
+        let count = due.len();
+        for n in &due {
+            self.trigger_dispatch(n.id).await;
+        }
+
+        Ok(count)
     }
 }
