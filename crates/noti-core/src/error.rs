@@ -39,15 +39,20 @@ pub enum NotiError {
     Internal(String),
 }
 
-// ---------------------------------------------------------------------------
-// Conversion helpers so adapter crates can use `?` ergonomically.
-// ---------------------------------------------------------------------------
-
-impl From<sqlx::Error> for NotiError {
-    fn from(e: sqlx::Error) -> Self {
+impl NotiError {
+    /// Build a [`NotiError::Database`] from any displayable source error.
+    ///
+    /// Adapter crates use this at the persistence boundary to map their
+    /// native errors (e.g. `sqlx::Error`) without `noti-core` depending on
+    /// the infrastructure crate: `.map_err(NotiError::database)?`.
+    pub fn database(e: impl std::fmt::Display) -> Self {
         Self::Database(e.to_string())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Conversion helpers so adapter crates can use `?` ergonomically.
+// ---------------------------------------------------------------------------
 
 impl From<serde_json::Error> for NotiError {
     fn from(e: serde_json::Error) -> Self {

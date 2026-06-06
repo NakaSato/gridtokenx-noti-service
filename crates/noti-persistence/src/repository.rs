@@ -6,8 +6,88 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
-use noti_core::error::Result;
+use noti_core::error::{NotiError, Result};
 use noti_core::traits::NotificationRepositoryTrait;
+
+// ---------------------------------------------------------------------------
+// Persistence-local mirrors of the domain enums.
+//
+// The SQLx `Type`/`Encode`/`Decode` impls live here, not in `noti-core`, so
+// the domain crate stays free of any infrastructure dependency. The orphan
+// rule forbids implementing SQLx traits for the `noti-core` enums directly,
+// hence these 1:1 mirrors plus `From` conversions at the adapter boundary.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, sqlx::Type)]
+#[sqlx(type_name = "notification_channel", rename_all = "lowercase")]
+enum ChannelDb {
+    Email,
+    Sms,
+    Push,
+    Webhook,
+    WebSocket,
+}
+
+#[derive(Debug, Clone, sqlx::Type)]
+#[sqlx(type_name = "notification_status", rename_all = "snake_case")]
+enum StatusDb {
+    Pending,
+    Processing,
+    Sent,
+    Delivered,
+    Failed,
+    PermanentFailure,
+}
+
+impl From<&NotificationChannel> for ChannelDb {
+    fn from(c: &NotificationChannel) -> Self {
+        match c {
+            NotificationChannel::Email => Self::Email,
+            NotificationChannel::Sms => Self::Sms,
+            NotificationChannel::Push => Self::Push,
+            NotificationChannel::Webhook => Self::Webhook,
+            NotificationChannel::WebSocket => Self::WebSocket,
+        }
+    }
+}
+
+impl From<ChannelDb> for NotificationChannel {
+    fn from(c: ChannelDb) -> Self {
+        match c {
+            ChannelDb::Email => Self::Email,
+            ChannelDb::Sms => Self::Sms,
+            ChannelDb::Push => Self::Push,
+            ChannelDb::Webhook => Self::Webhook,
+            ChannelDb::WebSocket => Self::WebSocket,
+        }
+    }
+}
+
+impl From<&NotificationStatus> for StatusDb {
+    fn from(s: &NotificationStatus) -> Self {
+        match s {
+            NotificationStatus::Pending => Self::Pending,
+            NotificationStatus::Processing => Self::Processing,
+            NotificationStatus::Sent => Self::Sent,
+            NotificationStatus::Delivered => Self::Delivered,
+            NotificationStatus::Failed => Self::Failed,
+            NotificationStatus::PermanentFailure => Self::PermanentFailure,
+        }
+    }
+}
+
+impl From<StatusDb> for NotificationStatus {
+    fn from(s: StatusDb) -> Self {
+        match s {
+            StatusDb::Pending => Self::Pending,
+            StatusDb::Processing => Self::Processing,
+            StatusDb::Sent => Self::Sent,
+            StatusDb::Delivered => Self::Delivered,
+            StatusDb::Failed => Self::Failed,
+            StatusDb::PermanentFailure => Self::PermanentFailure,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct NotificationRepository {
@@ -29,8 +109,8 @@ impl NotificationRepository {
 pub struct NotificationRow {
     pub id: Uuid,
     pub user_id: Option<Uuid>,
-    pub channel: NotificationChannel,
-    pub status: NotificationStatus,
+    channel: ChannelDb,
+    status: StatusDb,
     pub recipient: String,
     pub template_id: String,
     pub variables: serde_json::Value,
@@ -52,8 +132,8 @@ impl NotificationRow {
         Notification {
             id: self.id,
             user_id: self.user_id,
-            channel: self.channel,
-            status: self.status,
+            channel: self.channel.into(),
+            status: self.status.into(),
             recipient: self.recipient,
             template_id: self.template_id,
             variables: self.variables,
@@ -91,8 +171,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         )
         .bind(n.id)
         .bind(n.user_id)
-        .bind(n.channel.clone())
-        .bind(n.status.clone())
+        .bind(ChannelDb::from(&n.channel))
+        .bind(StatusDb::from(&n.status))
         .bind(&n.recipient)
         .bind(&n.template_id)
         .bind(&n.variables)
@@ -101,7 +181,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         .bind(n.created_at)
         .bind(n.updated_at)
         .fetch_one(&self.high_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(row.into_domain())
     }
@@ -119,7 +200,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         )
         .bind(id)
         .fetch_optional(&self.low_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(res.map(NotificationRow::into_domain))
     }
@@ -137,7 +219,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         )
         .bind(key)
         .fetch_optional(&self.high_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(res.map(NotificationRow::into_domain))
     }
@@ -164,12 +247,13 @@ impl NotificationRepositoryTrait for NotificationRepository {
             ",
         )
         .bind(id)
-        .bind(status)
+        .bind(StatusDb::from(&status))
         .bind(error)
         .bind(provider_ref)
         .bind(sent_at)
         .execute(&self.high_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(())
     }
@@ -185,7 +269,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         .bind(id)
         .bind(next_retry_at)
         .execute(&self.high_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(())
     }
@@ -204,7 +289,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         )
         .bind(i64::from(limit))
         .fetch_all(&self.high_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(res.into_iter().map(NotificationRow::into_domain).collect())
     }
@@ -231,7 +317,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.low_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(res.into_iter().map(NotificationRow::into_domain).collect())
     }
@@ -247,7 +334,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         .bind(id)
         .bind(user_id)
         .execute(&self.high_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(())
     }
@@ -262,7 +350,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         )
         .bind(user_id)
         .execute(&self.high_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(())
     }
@@ -273,7 +362,8 @@ impl NotificationRepositoryTrait for NotificationRepository {
         )
         .bind(user_id)
         .fetch_one(&self.low_priority_pool)
-        .await?;
+        .await
+        .map_err(NotiError::database)?;
 
         Ok(row.0)
     }

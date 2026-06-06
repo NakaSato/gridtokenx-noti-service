@@ -14,4 +14,3 @@ uuid.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 config.workspace = true
-sqlx = { workspace = true, features = ["macros"] }
