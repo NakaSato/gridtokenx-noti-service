@@ -64,6 +64,14 @@ struct SettlementProcessed {
     status: String,
     #[serde(default)]
     tx_signature: String,
+    #[serde(default)]
+    buyer_id: Option<String>,
+    #[serde(default)]
+    seller_id: Option<String>,
+    #[serde(default)]
+    amount: Value,
+    #[serde(default)]
+    price: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +122,20 @@ struct VerificationEmailRequested {
     verification_url: String,
     #[serde(default)]
     token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PriceAlertTriggered {
+    #[serde(default)]
+    user_id: Option<String>,
+    // Prices kept as raw JSON: the upstream encodes Decimal as a number or
+    // string depending on serde config, and the template renders either.
+    #[serde(default)]
+    target_price: Value,
+    #[serde(default)]
+    triggered_price: Value,
+    #[serde(default)]
+    condition: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,12 +199,10 @@ pub async fn dispatch(
     match event_type {
         "UserRegistered" => user_registered(orchestrator, ctx, data).await,
         "OrderMatched" => order_matched(orchestrator, ctx, data).await,
-        "SettlementProcessed" => {
-            settlement_processed(data);
-            Ok(())
-        }
+        "SettlementProcessed" => settlement_processed(orchestrator, ctx, data).await,
         "ErcIssued" => erc_issued(orchestrator, ctx, data).await,
         "VppDispatched" => vpp_dispatched(orchestrator, ctx, data).await,
+        "PriceAlertTriggered" => price_alert_triggered(orchestrator, ctx, data).await,
         "PasswordResetRequested" => {
             password_reset_requested(orchestrator, frontend_url, ctx, data).await
         }
@@ -273,18 +293,56 @@ async fn order_matched(
     Ok(())
 }
 
-fn settlement_processed(data: Value) {
+async fn settlement_processed(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
     let Some(p) = parse::<SettlementProcessed>("SettlementProcessed", data) else {
-        return;
+        return Ok(());
     };
+
     let status = if p.status.is_empty() {
         "unknown"
     } else {
         &p.status
     };
-    // Settlement events need the involved parties' user_ids to notify; until
-    // those are propagated, this is logged only.
-    info!("Settlement {} processed with status: {}", p.tx_signature, status);
+    info!(
+        "Settlement {} processed with status: {}",
+        p.tx_signature, status
+    );
+
+    // Notify each involved party that carries a UUID. Settlement events that
+    // omit party ids (the upstream producer may not propagate them) fall back
+    // to the log line above.
+    for (role, id) in [("buyer", p.buyer_id.as_deref()), ("seller", p.seller_id.as_deref())] {
+        let Some(uid) = parse_uuid(id) else {
+            continue;
+        };
+
+        orchestrator
+            .queue_notification(
+                Some(uid),
+                NotificationChannel::WebSocket,
+                uid.to_string(),
+                "settlement_processed.txt.tera".to_string(),
+                serde_json::json!({
+                    "role": role,
+                    "status": status,
+                    "tx_signature": p.tx_signature,
+                    "amount": p.amount,
+                    "price": p.price
+                }),
+                Some(format!(
+                    "kafka:settlement:{role}:{}:{}",
+                    ctx.partition, ctx.offset
+                )),
+            )
+            .await
+            .map_err(into_anyhow)?;
+    }
+
+    Ok(())
 }
 
 async fn erc_issued(
@@ -356,6 +414,42 @@ async fn vpp_dispatched(
             }),
             Some(format!(
                 "kafka:vpp_dispatch:{}:{}",
+                ctx.partition, ctx.offset
+            )),
+        )
+        .await
+        .map_err(into_anyhow)?;
+
+    Ok(())
+}
+
+async fn price_alert_triggered(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<PriceAlertTriggered>("PriceAlertTriggered", data) else {
+        return Ok(());
+    };
+
+    let Some(uid) = parse_uuid(p.user_id.as_deref()) else {
+        warn!("Skipping PriceAlertTriggered: missing/invalid user_id");
+        return Ok(());
+    };
+
+    orchestrator
+        .queue_notification(
+            Some(uid),
+            NotificationChannel::WebSocket,
+            uid.to_string(),
+            "price_alert_triggered.txt.tera".to_string(),
+            serde_json::json!({
+                "condition": p.condition,
+                "target_price": p.target_price,
+                "triggered_price": p.triggered_price
+            }),
+            Some(format!(
+                "kafka:price_alert:{}:{}",
                 ctx.partition, ctx.offset
             )),
         )
@@ -546,4 +640,220 @@ async fn user_wallet_linked(
         .map_err(into_anyhow)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    use noti_core::domain::Notification;
+    use noti_core::traits::{
+        MockCacheTrait, MockMessageQueueTrait, MockNotificationProviderTrait,
+        MockNotificationRepositoryTrait, MockTemplateEngineTrait,
+    };
+
+    /// A captured notification queued during a test.
+    type Sink = Arc<Mutex<Vec<Notification>>>;
+
+    /// Build an orchestrator whose `repo.create` records every queued
+    /// notification. Cache and MQ accept everything; providers/template are
+    /// never exercised on the queue path.
+    fn test_orchestrator() -> (Arc<NotificationOrchestrator>, Sink) {
+        let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+        let recorder = sink.clone();
+
+        let mut repo = MockNotificationRepositoryTrait::new();
+        repo.expect_create().times(..).returning(move |n| {
+            recorder.lock().expect("sink lock").push(n.clone());
+            Ok(n.clone())
+        });
+
+        let mut cache = MockCacheTrait::new();
+        cache.expect_set_value().times(..).returning(|_, _, _| Ok(()));
+
+        let mut mq = MockMessageQueueTrait::new();
+        mq.expect_publish_dispatch().times(..).returning(|_| Ok(()));
+
+        let orch = Arc::new(NotificationOrchestrator::new(
+            Arc::new(repo),
+            Arc::new(MockTemplateEngineTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(cache),
+            Some(Arc::new(mq)),
+        ));
+        (orch, sink)
+    }
+
+    fn ctx() -> MsgCtx {
+        MsgCtx {
+            topic: "iam.user.events".to_string(),
+            partition: 2,
+            offset: 99,
+        }
+    }
+
+    #[tokio::test]
+    async fn user_registered_queues_welcome_email() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "email": "alice@example.com", "username": "alice" });
+
+        dispatch(&orch, None, &ctx(), "UserRegistered", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1);
+        let n = &queued[0];
+        assert!(matches!(n.channel, NotificationChannel::Email));
+        assert_eq!(n.recipient, "alice@example.com");
+        assert_eq!(n.template_id, "welcome.html.tera");
+        assert_eq!(
+            n.idempotency_key.as_deref(),
+            Some("kafka:iam.user.events:2:99")
+        );
+    }
+
+    #[tokio::test]
+    async fn user_registered_skips_empty_email() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "email": "", "username": "ghost" });
+
+        dispatch(&orch, None, &ctx(), "UserRegistered", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn order_matched_notifies_both_parties() {
+        let (orch, sink) = test_orchestrator();
+        let buyer = Uuid::new_v4();
+        let seller = Uuid::new_v4();
+        let data = serde_json::json!({
+            "buyer_id": buyer.to_string(),
+            "seller_id": seller.to_string(),
+            "amount": 100,
+            "price": 5
+        });
+
+        dispatch(&orch, None, &ctx(), "OrderMatched", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 2, "buyer + seller");
+        assert!(queued.iter().all(|n| matches!(n.channel, NotificationChannel::WebSocket)));
+        assert!(queued.iter().any(|n| n.user_id == Some(buyer)));
+        assert!(queued.iter().any(|n| n.user_id == Some(seller)));
+    }
+
+    #[tokio::test]
+    async fn order_matched_skips_non_uuid_parties() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "buyer_id": "not-a-uuid", "seller_id": null });
+
+        dispatch(&orch, None, &ctx(), "OrderMatched", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn price_alert_triggered_notifies_owner() {
+        let (orch, sink) = test_orchestrator();
+        let owner = Uuid::new_v4();
+        let data = serde_json::json!({
+            "alert_id": Uuid::new_v4().to_string(),
+            "user_id": owner.to_string(),
+            "target_price": "0.25",
+            "triggered_price": "0.27",
+            "condition": "above"
+        });
+
+        dispatch(&orch, None, &ctx(), "PriceAlertTriggered", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1);
+        let n = &queued[0];
+        assert!(matches!(n.channel, NotificationChannel::WebSocket));
+        assert_eq!(n.user_id, Some(owner));
+        assert_eq!(n.template_id, "price_alert_triggered.txt.tera");
+        assert_eq!(n.variables["condition"], "above");
+    }
+
+    #[tokio::test]
+    async fn price_alert_triggered_skips_missing_user() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "user_id": null, "condition": "below" });
+
+        dispatch(&orch, None, &ctx(), "PriceAlertTriggered", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn password_reset_rewrites_url_to_frontend() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "email": "bob@example.com",
+            "reset_url": "https://upstream.invalid/reset-password?token=abc"
+        });
+
+        dispatch(
+            &orch,
+            Some("https://app.gridtokenx.com"),
+            &ctx(),
+            "PasswordResetRequested",
+            data,
+        )
+        .await
+        .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1);
+        let url = queued[0].variables["reset_url"]
+            .as_str()
+            .expect("reset_url string");
+        assert!(
+            url.starts_with("https://app.gridtokenx.com"),
+            "URL not rewritten to frontend: {url}"
+        );
+        assert!(url.contains("token=abc"), "token lost in rewrite: {url}");
+    }
+
+    #[tokio::test]
+    async fn unknown_event_type_is_ignored() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "whatever": true });
+
+        dispatch(&orch, None, &ctx(), "SomethingUnknown", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_payload_is_skipped() {
+        let (orch, sink) = test_orchestrator();
+        // `email` is a String; a numeric value fails deserialization.
+        let data = serde_json::json!({ "email": 12345, "username": "x" });
+
+        dispatch(&orch, None, &ctx(), "UserRegistered", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
 }

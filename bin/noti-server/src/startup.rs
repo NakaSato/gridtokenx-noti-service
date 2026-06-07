@@ -181,6 +181,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         let topics = vec![
             config.kafka_topic_user_events.clone(),
             config.kafka_topic_audit_events.clone(),
+            config.kafka_topic_trading_triggers.clone(),
         ];
         let orch = orchestrator.clone();
         let frontend_url = config.frontend_url.clone();
