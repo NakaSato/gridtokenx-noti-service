@@ -33,3 +33,47 @@ where
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request;
+
+    /// Build request `Parts` carrying the given optional user-id header value.
+    fn parts_with_header(value: Option<&str>) -> Parts {
+        let mut builder = Request::builder();
+        if let Some(v) = value {
+            builder = builder.header(USER_ID_HEADER, v);
+        }
+        builder.body(()).expect("build request").into_parts().0
+    }
+
+    #[tokio::test]
+    async fn extracts_valid_user_id() {
+        let id = Uuid::new_v4();
+        let mut parts = parts_with_header(Some(&id.to_string()));
+
+        let ctx = UserContext::from_request_parts(&mut parts, &())
+            .await
+            .expect("valid header should extract");
+        assert_eq!(ctx.user_id, id);
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_header() {
+        let mut parts = parts_with_header(None);
+
+        let result = UserContext::from_request_parts(&mut parts, &()).await;
+        let (status, _) = result.expect_err("missing header must reject");
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn rejects_malformed_uuid() {
+        let mut parts = parts_with_header(Some("not-a-uuid"));
+
+        let result = UserContext::from_request_parts(&mut parts, &()).await;
+        let (status, _) = result.expect_err("malformed uuid must reject");
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}

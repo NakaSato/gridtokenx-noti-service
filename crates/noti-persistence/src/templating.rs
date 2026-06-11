@@ -18,7 +18,10 @@ impl TemplateEngine {
         let mut tera = Tera::new(&format!("{templates_path}/**/*"))
             .map_err(|e| anyhow::anyhow!("Failed to initialize Tera engine: {e}"))?;
 
-        tera.autoescape_on(vec!["html"]);
+        // Templates are named `*.html.tera`, so the suffix to match is
+        // `html.tera` (not `html`). Matching on `html` alone escaped nothing,
+        // leaving HTML emails open to markup injection via user-supplied vars.
+        tera.autoescape_on(vec!["html.tera"]);
 
         Ok(Self { tera })
     }
@@ -44,5 +47,65 @@ impl TemplateEngineTrait for TemplateEngine {
         self.tera
             .render(template_id, &context)
             .map_err(|e| NotiError::Template(format!("render '{template_id}' failed: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TemplateEngine;
+    use noti_core::traits::TemplateEngineTrait;
+    use serde_json::json;
+
+    fn engine() -> TemplateEngine {
+        // Templates live at the repo root, two levels up from this crate.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates");
+        TemplateEngine::new(dir).expect("template engine loads (also validates all template syntax)")
+    }
+
+    /// Render every template the Kafka consumers route to, with the exact
+    /// variable shape each handler passes (see `consumers/events.rs`). Guards
+    /// against a template referencing a variable the producer never supplies.
+    #[test]
+    fn all_routed_templates_render() {
+        let e = engine();
+        let cases: &[(&str, serde_json::Value)] = &[
+            ("welcome.html.tera", json!({ "name": "Alice" })),
+            (
+                "trade_matched.txt.tera",
+                json!({ "role": "buyer", "amount": "10.5", "price": "2.30" }),
+            ),
+            ("erc_issued.html.tera", json!({ "amount": "100" })),
+            (
+                "vpp_dispatched.txt.tera",
+                json!({ "cluster_id": "C1", "target_kw": "500", "members_count": 12 }),
+            ),
+            (
+                "password_reset.html.tera",
+                json!({ "reset_url": "https://app.example/reset?token=abc" }),
+            ),
+            (
+                "verify_email.html.tera",
+                json!({ "name": "Bob", "verification_url": "https://app.example/verify?token=xyz" }),
+            ),
+            (
+                "user_onboarded.txt.tera",
+                json!({ "user_account_pda": "PDA1", "transaction_signature": "SIG1" }),
+            ),
+            (
+                "meter_onboarded.txt.tera",
+                json!({ "meter_id": "M1", "meter_type": "smart", "transaction_signature": "SIG2" }),
+            ),
+            (
+                "security_alert.txt.tera",
+                json!({ "wallet_address": "0xabc", "shard_id": "1", "transaction_signature": "SIG3" }),
+            ),
+        ];
+
+        for (name, vars) in cases {
+            let out = e
+                .render(name, vars)
+                .unwrap_or_else(|err| panic!("render '{name}' failed: {err}"));
+            assert!(!out.trim().is_empty(), "template '{name}' rendered empty");
+        }
     }
 }

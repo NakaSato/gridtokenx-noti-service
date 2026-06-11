@@ -78,6 +78,10 @@ pub struct Config {
     pub kafka_topic_user_events: String,
     #[serde(default = "default_kafka_audit_events")]
     pub kafka_topic_audit_events: String,
+    /// Trading-service trigger topic (price-alert firings). Matches the trading
+    /// EventBus topic `{KAFKA_TOPIC_PREFIX}.triggers` (default prefix `trading`).
+    #[serde(default = "default_kafka_trading_triggers")]
+    pub kafka_topic_trading_triggers: String,
 }
 
 fn default_kafka_user_events() -> String {
@@ -86,6 +90,10 @@ fn default_kafka_user_events() -> String {
 
 fn default_kafka_audit_events() -> String {
     "iam.audit.events".to_string()
+}
+
+fn default_kafka_trading_triggers() -> String {
+    "trading.triggers".to_string()
 }
 
 impl Config {

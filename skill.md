@@ -1,154 +1,118 @@
+# SKILL.md — noti-service subsystem expert knowledge
+
+Operational deep-knowledge for working *inside* `gridtokenx-noti-service`. Reflects actual code, not aspirational design. For build commands see `CLAUDE.md`; for layer diagrams see `ARCHITECTURE.md`; for crate-tree rationale see `gridtokenx-rust-structure.md`.
+
 ---
-name: gridtokenx-notification-architecture
-description: Guidance for structuring and extending the GridTokenX Notification Service — the trait-based dependency injection pattern, sync-core/async-edges design, Tera template rendering system, multi-channel providers (Email, SMS, Push, Webhook, WebSocket), Kafka event ingestion, RabbitMQ DLX retry flow, and the decoupled WebSocket registry. Use this skill whenever the user asks about how to organize or extend notification handling code; where to add new providers, channels, or event types; how the template system works; where business logic should live vs infrastructure; how retry and idempotency work; or how to maintain the strict dependency layers while adding new delivery mechanisms. Trigger on questions about the noti-service architecture, adding notification features, template rendering, provider implementations, or event-driven notification flows.
+
+## Crate map (actual)
+
+```
+crates/noti-core         domain.rs, traits.rs, error.rs, config.rs   — sync, no I/O deps
+crates/noti-protocol     build.rs (buffa-build + connectrpc-build) → generated noti.v1
+crates/noti-persistence  repository.rs, cache.rs, templating.rs,
+                         messaging/{kafka,rabbitmq}.rs,
+                         providers/{smtp,websocket}.rs, providers.rs (mocks)
+crates/noti-logic        orchestrator/{mod,queue,dispatch,query}.rs  — sync core
+crates/noti-api          handlers.rs, grpc.rs, websocket.rs, auth.rs
+bin/noti-server          main.rs, startup.rs, telemetry.rs,
+                         consumers/{mod,events,url}.rs               — wiring + consumers
+```
+
+Workspace: edition **2024**, version 0.1.1. `release` profile = `lto=true`, `codegen-units=1`, `panic=abort`, `strip`. Two external path deps: `../gridtokenx-blockchain-core`, `../gridtokenx-telemetry`.
+
 ---
 
-# GridTokenX Notification Service Architecture
+## Domain types (noti-core/domain.rs)
 
-A skill for structuring and extending the centralized notification dispatcher for the GridTokenX platform. The service handles all outbound communications across multiple channels (Email, SMS, Push, Webhook, WebSocket) with HTML templating, idempotency, URL rewriting, and retry logic.
+- `NotificationChannel` = `Email | Sms | Push | Webhook | WebSocket`
+- `NotificationStatus` = `Pending | Processing | Sent | Delivered | Failed | PermanentFailure`
+- `Notification` struct — note `user_id: Option<Uuid>` (system notifications have none), `idempotency_key: Option<String>`, `retry_count: i32`, `next_retry_at`, `provider_id`/`provider_ref`, `read_at`.
 
-## Core Stance: The Notification Pipeline Is a Pure Function of Events
+## DI traits (noti-core/traits.rs)
 
-The service ingests events, renders templates, selects providers, and delivers. Every design decision flows from keeping that pipeline transparent and testable. Three questions worth holding:
+All `#[cfg_attr(feature = "mocks", mockall::automock)]`. All async except `TemplateEngineTrait` (sync — pure string transform).
 
-1. **Does this belong in the pipeline or in a provider?** Pipeline logic (routing, retry, idempotency) is generic. Provider logic (SMTP handshake, push payload format) is channel-specific. Don't mix them.
-2. **Is this sync or async?** Template rendering, variable interpolation, channel mapping — sync. Database writes, queue publishes, SMTP sends — async. The boundary is at the orchestrator's dispatch call.
-3. **Does the upstream event provide everything, or must the service fill gaps?** URLs, tokens, and recipient addresses can come from events or be constructed from config. Keep construction at the adapter edge (`consumers.rs`), never in core.
+| Trait | Impl (persistence) | Notes |
+|---|---|---|
+| `NotificationRepositoryTrait` | `repository.rs` SqlxNotiRepo | `create` is idempotent: returns existing row on `idempotency_key` conflict |
+| `NotificationProviderTrait` | `providers/smtp.rs`, `providers.rs` mocks, `providers/websocket.rs` | `send(recipient, content) -> provider_ref`; `provider_id()` for audit |
+| `WebSocketRegistryTrait` | `noti-api::websocket::ConnectionManager` | implemented in **api**, not persistence (avoids cycle) |
+| `CacheTrait` | `cache.rs` Redis | includes `lock`/`unlock` (distributed lock), `increment_with_ttl` (rate-limit) |
+| `TemplateEngineTrait` | `templating.rs` Tera | **sync** |
+| `MessageQueueTrait` | `messaging/rabbitmq.rs` | `publish_dispatch`, `publish_retry(id, delay_ms)` |
 
-## The Six-Crate Modular Monolith
+---
 
-```
-noti-core        → Domain models, 6 DI traits, config, NotiError (thiserror)
-noti-protocol    → ConnectRPC/gRPC wire contracts from proto/noti.proto
-noti-persistence → SQLx Postgres (dual-pool), Redis cache, RabbitMQ publisher, SMTP, Tera, providers
-noti-logic       → NotificationOrchestrator — sync business rules (queue, dispatch, retry)
-noti-api         → Axum REST, ConnectRPC service, JWT auth, WebSocket registry
-noti-server      → Binary entry, startup wiring, background Kafka + RabbitMQ consumers
-```
+## Orchestrator flow (noti-logic) — the critical path
 
-Dependency flow is strictly downward. `noti-logic` never imports `noti-persistence` or `noti-api`. All cross-layer communication goes through traits defined in `noti-core`.
+`NotificationOrchestrator` holds 5 named providers as separate fields (`email/sms/push/webhook/websocket`), plus repo, template_engine, cache, and `mq: Option<...>`. Methods split across `impl` blocks in `queue.rs` / `dispatch.rs` / `query.rs`.
 
-## The Six DI Traits
+### queue_notification (queue.rs)
+1. Build `Notification` (status `Pending`), `repo.create()`.
+2. **Idempotency = dual-layer**: repo returns existing row on key conflict → if `saved.id != requested_id`, return early (duplicate). *Then* cache `idempotency:{key}` in Redis 3600s (best-effort, warns on fail).
+3. Trigger dispatch: `mq.publish_dispatch(id)`. **If MQ fails or `mq` is None → fallback `tokio::spawn(orchestrator.dispatch(id))` in-process.**
 
-Every external dependency is a trait in `noti-core/src/traits.rs`:
+### dispatch (dispatch.rs)
+1. `repo.get_by_id`; skip unless status `Pending`/`Processing` (re-delivery guard).
+2. Mark `Processing`, render template, select provider by channel, `send()`.
+3. **Success** → `update_status(Sent, provider_ref)`.
+4. **Failure** → retry logic:
+   - `const MAX_RETRIES: i32 = 5`. At/over → `PermanentFailure`, propagate err.
+   - Else: `delay_ms = 2^retry_count * 60 * 1000` (exponential, minutes). `increment_retry` + status back to `Pending`. Schedule via `mq.publish_retry`; on MQ failure fall back to `spawn_in_process_retry` (tokio sleep + redispatch).
 
-| Trait | Methods | Purpose |
-|-------|---------|---------|
-| `NotificationRepositoryTrait` | 10 (CRUD, idempotency, retry, read-status) | Persist notification lifecycle |
-| `NotificationProviderTrait` | 2 (`send`, `provider_id`) | Send via external channel |
-| `WebSocketRegistryTrait` | 1 (`send_to_user`) | Track active WS connections |
-| `CacheTrait` | 6 (set, get, incr, del, lock, unlock) | Redis cache + distributed locks |
-| `TemplateEngineTrait` | 1 sync (`render`) | Render Tera templates |
-| `MessageQueueTrait` | 2 (`publish_dispatch`, `publish_retry`) | RabbitMQ task publishing |
+> Retry is driven by RabbitMQ DLX TTL in prod; in-process spawn is the degraded fallback when MQ absent/erroring. Both honor the same backoff.
 
-Wiring happens in `noti-server/startup.rs` — concrete implementations wrapped in `Arc<dyn Trait>` and injected into `NotificationOrchestrator`.
+---
 
-## The Notification Pipeline
+## Ingestion: Kafka consumers (bin/noti-server/consumers)
 
-```
-Kafka Event → consumers.rs → orchestrator.queue_notification()
-                                    ↓
-                            idempotency check (Redis)
-                            persist notification (Postgres)
-                            cache idempotency key (Redis, TTL 3600s)
-                            publish dispatch task (RabbitMQ) or fallback spawn
-                                    ↓
-                    RabbitMQ consumer → orchestrator.dispatch()
-                                            ↓
-                                    mark Processing
-                                    render template (Tera, sync)
-                                    select provider by channel
-                                    send via provider (async)
-                                    update status in DB
-```
+`consumers/mod.rs::handle_kafka_message` decodes, then `events.rs::route` matches `event_type` string → typed handler. **13 match arms** (events.rs:177):
 
-### Retry Architecture
+`UserRegistered, OrderMatched, SettlementProcessed, ErcIssued, VppDispatched, PasswordResetRequested, VerificationEmailRequested, UserOnboarded, MeterOnboarded, UserWalletLinked` (Settlement/PasswordReset/VerificationEmail have inline arms).
 
-Failed deliveries are nacked to RabbitMQ with DLX (Dead-Letter Exchange). TTL-based exponential backoff (`delay = 2^retry_count × 60s`), max 5 retries. The retry path: failed send → `increment_retry` in DB → `publish_retry` to RabbitMQ with `expiration` header → TTL expires → DLX routes to `noti.dispatch` → consumer re-attempts → repeat until success or `PermanentFailure`.
+Each payload is a typed `#[derive(Deserialize)]` struct (e.g. `UserRegistered{email,username}`) — missing/renamed field fails at deserialize boundary, not silently. Idempotency key derived from `MsgCtx{topic,partition,offset}`. `consumers/url.rs` builds callback URLs (`build_callback_url`, `rewrite_url`) using `frontend_url`.
 
-### Idempotency
+**Add event type**: typed struct + handler fn in `events.rs`, match arm in `route`, template in `templates/<name>.txt.tera`. See CLAUDE.md.
 
-Every notification carries an `idempotency_key` (Kafka events use `kafka:{topic}:{partition}:{offset}`). Before persisting, the orchestrator checks Redis for an existing notification with that key, then caches the new key on success.
+---
 
-## The WebSocket Decoupling Pattern
+## Wiring (bin/noti-server/startup.rs)
 
-WebSocket connections live in `noti-api` (Axum route + `DashMap`-based `ConnectionManager`), but the orchestrator needs to push messages without importing the API crate.
+- **Two Postgres pools**: `high_priority_pool` + `low_priority_pool` (separate `PgPoolOptions`). Check which the repo uses for reads vs writes before changing pool sizing.
+- **Email provider fallback**: `if config.smtp_host.is_some()` → `SmtpProvider::new(...)` else `MockEmailProvider` (warns). **Webhook = real** (`WebhookProvider`, HTTP POST + SSRF guard). SMS/Push still mocks (`MockSmsProvider`/`MockPushProvider` — local capture sink, not real vendors).
+- **RabbitMQ is required**: empty `rabbitmq_url` → `anyhow::bail!` at startup (durable retry mandatory). No more silent in-memory-only mode.
+- WebSocket: `ConnectionManager::new()` (api) wrapped by `WebSocketProvider` (persistence) holding `Arc<dyn WebSocketRegistryTrait>`.
+- gRPC: `NotificationGrpcService` registered on connectrpc router → `into_axum_router()`.
+- **Dual server, two tokio tasks**: HTTP on `config.port` (`0.0.0.0`), gRPC on `grpc_port = config.grpc_port.unwrap_or(port + 10)`. Both graceful-shutdown via cancellation token.
+- Kafka + RabbitMQ consumers spawned as background tasks (guarded by config presence).
 
-Solution:
-- `ConnectionManager` in `noti-api` implements `WebSocketRegistryTrait` (defined in `noti-core`)
-- `WebSocketProvider` in `noti-persistence` implements `NotificationProviderTrait` but only holds `Arc<dyn WebSocketRegistryTrait>`
-- At startup, `ConnectionManager` is wrapped as `Arc<dyn WebSocketRegistryTrait>`, passed to both the Axum router (for upgrades) and `WebSocketProvider` (for sends)
+---
 
-No circular dependencies. The API crate never knows about providers; the persistence crate never knows about Axum.
+## Gotchas
 
-## Templates
+1. **`unwrap_used = "deny"`, `unsafe_code = "deny"`, `clippy::pedantic = warn`** workspace-wide. Use `?` + context; `.expect("reason")` only in fatal init.
+2. **`panic = "abort"` in release** — no unwinding; a panic kills the process. Don't rely on `catch_unwind`.
+3. **TemplateEngineTrait is sync** — don't `.await` it. Tera loads templates at startup from `templates/`; a missing template is a render-time `NotiError`, surfaces as dispatch failure → retry.
+4. **Idempotency lives in the repo, not just cache** — the unique-key conflict in `create()` is the source of truth; Redis cache is an optimization. Don't remove the repo-side dedup.
+5. **RabbitMQ required at boot** — startup `bail!`s on empty `rabbitmq_url`. The in-process dispatch/retry path still exists as a degraded fallback *when a live MQ errors mid-run*, but you can no longer start with no broker (retries would be lost on restart).
+6. **Webhook SSRF guard** (`providers/webhook.rs`): http/https only, redirects disabled, resolved IP must be public unicast (blocks loopback/RFC1918/link-local/CGNAT/ULA + v4-mapped), connection pinned to vetted addr (anti-rebind). Reaching an internal URL → `NotiError::Internal` → counts as dispatch failure → retry.
+7. **System notifications** have `user_id: None` — WebSocket push and user-list queries must handle that.
+8. **gRPC stack** = connectrpc 0.6 + buffa 0.6 (not raw tonic services). Codegen in `noti-protocol/build.rs`. Regenerate by touching `proto/noti.proto` + rebuild.
 
-Tera (Jinja2-like) templates in `templates/`. Three formats:
-- `.html.tera` — styled HTML email templates (welcome, ERC issued, password reset, email verification)
-- `.txt.tera` — plain text for WebSocket notifications and email fallbacks
+---
 
-The `TemplateEngine` loads all templates at startup via glob (`templates/**/*`) with HTML autoescaping enabled. Variables are passed as `serde_json::Value`.
+## Common tasks → entry points
 
-### HTML Email Design
+| Task | Files |
+|---|---|
+| New event → notification | `consumers/events.rs`, `templates/<name>.*.tera` |
+| New delivery provider | `noti-persistence/providers/`, `providers.rs`, orchestrator field in `orchestrator/mod.rs`, wire in `startup.rs` |
+| Change retry policy | `orchestrator/dispatch.rs` (`MAX_RETRIES`, `delay_ms` formula) |
+| Repo query / schema | `noti-persistence/repository.rs`, `migrations/` |
+| WebSocket behavior | `noti-api/websocket.rs` (`ConnectionManager`), `providers/websocket.rs` |
+| Auth / JWT | `noti-api/auth.rs` (`JWT_SECRET`) |
+| Template rendering | `noti-persistence/templating.rs` |
 
-All email HTML templates follow a consistent design system:
-- Green gradient header (amber for password reset / security)
-- White card with rounded corners and shadow
-- Responsive layout, max-width 600px
-- CTA button with gradient
-- Fallback text link
-- Footer with brand
+## Tests
 
-`SmtpProvider` auto-detects HTML content (`<!DOCTYPE` or `<html` prefix) and sends as `multipart/alternative` with both HTML and stripped-text parts.
-
-### URL Rewriting
-
-Email templates contain callback URLs. The `consumers.rs` adapter edge handles three scenarios:
-
-1. **Upstream provides full URL with internal address** → `rewrite_url(frontend_url, upstream_url)` replaces `scheme://host:port` with `FRONTEND_URL`, preserving path and query.
-2. **Upstream provides only a token** → `build_callback_url(frontend_url, path, query)` constructs full URL.
-3. **No `FRONTEND_URL` configured** → passes through as-is.
-
-## Dual PostgreSQL Pool
-
-`NotificationRepository` routes queries to two pools:
-- **High-priority** (full max connections): all writes + idempotency lookups
-- **Low-priority** (half max connections): read-only queries (get_by_id, list, count)
-
-## Error Strategy
-
-- `noti-core/error.rs`: `NotiError` enum via `thiserror` — 7 typed variants (`Database`, `Template`, `Provider`, `Validation`, `NotFound`, `Idempotent`, `Internal`)
-- All DI traits return `Result<T, NotiError>`
-- `noti-api` and `noti-server`: `anyhow` for attaching context at the edges
-- Workspace lints: `unsafe_code = "deny"`, `unwrap_used = "deny"`, `pedantic = "warn"`
-
-## How to Extend
-
-### Adding a New Event Type
-
-1. Create template: `templates/<event_name>.html.tera` (email) or `.txt.tera` (WebSocket)
-2. Add match arm in `bin/noti-server/src/consumers.rs` → `handle_kafka_message()`
-3. Call `orchestrator.queue_notification()` with channel, recipient, template ID, variables, idempotency key
-4. If the notification needs a callback URL, use `build_callback_url(frontend_url, path, query)` or `rewrite_url(frontend_url, upstream_url)`
-
-### Adding a New Provider
-
-1. Implement `NotificationProviderTrait` in `crates/noti-persistence/src/providers/`
-2. Register in `crates/noti-persistence/src/providers.rs` (module declaration + re-export)
-3. Wire into `NotificationOrchestrator::new()` in `bin/noti-server/src/startup.rs`
-4. Map the channel in the orchestrator's dispatch logic (`orchestrator.rs` match block)
-
-### Adding a New Delivery Channel
-
-1. Add variant to `NotificationChannel` enum in `noti-core/src/domain.rs`
-2. Add provider (see above)
-3. Update the orchestrator's channel→provider mapping
-4. Add template support if needed
-
-## Dual Server Architecture
-
-The service runs two concurrent servers:
-- **HTTP/REST** on `PORT` (default 8080) — Axum with health endpoints, notification CRUD, WebSocket upgrade
-- **gRPC + HTTP/3** on `PORT + 10` (default 8090) — ConnectRPC over TCP/HTTP2 and QUIC/HTTP3 via `quinn` + `h3`
-
-Both share the same Axum router. Graceful shutdown via `CancellationToken`.
+Unit tests inline `#[cfg(test)]`. `noti-logic` orchestrator tests hand-roll mock impls (see `orchestrator/mod.rs` tests: `test_queue_notification`, `test_queue_notification_deduplicates_idempotency_key`) — also available via `noti-core` `mocks` feature (`mockall`). Run one: `cargo test -p noti-logic test_queue_notification`. Endpoint smoke: `./scripts/test_endpoints.sh`.

@@ -15,6 +15,7 @@ use crate::error::Result;
 // ---------------------------------------------------------------------------
 
 /// Persistent storage for notification records.
+#[cfg_attr(feature = "mocks", mockall::automock)]
 #[async_trait]
 pub trait NotificationRepositoryTrait: Send + Sync {
     async fn create(&self, notification: &Notification) -> Result<Notification>;
@@ -29,6 +30,10 @@ pub trait NotificationRepositoryTrait: Send + Sync {
     ) -> Result<()>;
     async fn increment_retry(&self, id: Uuid, next_retry_at: DateTime<Utc>) -> Result<()>;
     async fn get_pending_for_retry(&self, limit: i32) -> Result<Vec<Notification>>;
+    /// Reset rows stuck in `Processing` for longer than `stuck_threshold_secs`
+    /// (e.g. a crash mid-dispatch) back to `Pending`, due immediately, so a
+    /// boot-time sweep re-dispatches them. Returns the number of rows reset.
+    async fn reset_stuck_processing(&self, stuck_threshold_secs: i64) -> Result<u64>;
 
     // User-facing operations
     async fn list_by_user(
@@ -47,6 +52,7 @@ pub trait NotificationRepositoryTrait: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// External delivery provider (Email, SMS, Push, Webhook, WebSocket).
+#[cfg_attr(feature = "mocks", mockall::automock)]
 #[async_trait]
 pub trait NotificationProviderTrait: Send + Sync {
     /// Deliver content to the given recipient. Returns a provider reference ID.
@@ -56,6 +62,7 @@ pub trait NotificationProviderTrait: Send + Sync {
 }
 
 /// Registry for active WebSocket connections.
+#[cfg_attr(feature = "mocks", mockall::automock)]
 #[async_trait]
 pub trait WebSocketRegistryTrait: Send + Sync {
     /// Send a message to a specific user via WebSocket.
@@ -67,6 +74,7 @@ pub trait WebSocketRegistryTrait: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Transient key-value cache (Redis-backed in production).
+#[cfg_attr(feature = "mocks", mockall::automock)]
 #[async_trait]
 pub trait CacheTrait: Send + Sync {
     async fn set_value(&self, key: &str, value: serde_json::Value, ttl_secs: u64) -> Result<()>;
@@ -88,6 +96,7 @@ pub trait CacheTrait: Send + Sync {
 /// # Errors
 ///
 /// Returns `NotiError` if the template is not found or rendering fails.
+#[cfg_attr(feature = "mocks", mockall::automock)]
 pub trait TemplateEngineTrait: Send + Sync {
     /// # Errors
     ///
@@ -100,6 +109,7 @@ pub trait TemplateEngineTrait: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Dispatch / retry queue for notification tasks.
+#[cfg_attr(feature = "mocks", mockall::automock)]
 #[async_trait]
 pub trait MessageQueueTrait: Send + Sync {
     async fn publish_dispatch(&self, notification_id: Uuid) -> Result<()>;

@@ -2,12 +2,10 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::Type;
 use uuid::Uuid;
 
 /// The delivery channel for a notification.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-#[sqlx(type_name = "notification_channel", rename_all = "lowercase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NotificationChannel {
     Email,
     Sms,
@@ -17,8 +15,7 @@ pub enum NotificationChannel {
 }
 
 /// Lifecycle status of a notification.
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
-#[sqlx(type_name = "notification_status", rename_all = "snake_case")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NotificationStatus {
     Pending,
     Processing,

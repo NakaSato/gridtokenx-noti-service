@@ -2,15 +2,18 @@
 //! dispatching, and retrying notifications.
 //!
 //! All dependencies are injected via trait objects from `noti_core::traits`.
+//!
+//! The orchestrator's methods are split across submodules by concern:
+//! [`queue`] (ingestion), [`dispatch`] (delivery + retry), and [`query`]
+//! (user-facing reads). They all extend the same [`NotificationOrchestrator`]
+//! via separate `impl` blocks.
+
+mod dispatch;
+mod query;
+mod queue;
 
 use std::sync::Arc;
 
-use chrono::Utc;
-use tracing::{error, info, warn};
-use uuid::Uuid;
-
-use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
-use noti_core::error::{NotiError, Result};
 use noti_core::traits::{
     CacheTrait, MessageQueueTrait, NotificationProviderTrait, NotificationRepositoryTrait,
     TemplateEngineTrait,
@@ -54,254 +57,16 @@ impl NotificationOrchestrator {
             mq,
         }
     }
-
-    /// Accept a notification request: persist, cache idempotency key,
-    /// and trigger async dispatch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the repository call fails or the notification
-    /// cannot be persisted.
-    pub async fn queue_notification(
-        self: &Arc<Self>,
-        user_id: Option<Uuid>,
-        channel: NotificationChannel,
-        recipient: String,
-        template_id: String,
-        variables: serde_json::Value,
-        idempotency_key: Option<String>,
-    ) -> Result<Uuid> {
-        // 1. Create notification record atomically. The repository returns an
-        // existing row when idempotency_key conflicts, preventing duplicate sends.
-        let notification = Notification {
-            id: Uuid::new_v4(),
-            user_id,
-            channel,
-            status: NotificationStatus::Pending,
-            recipient,
-            template_id,
-            variables,
-            provider_id: None,
-            provider_ref: None,
-            retry_count: 0,
-            next_retry_at: Utc::now(),
-            error_message: None,
-            idempotency_key: idempotency_key.clone(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            sent_at: None,
-            read_at: None,
-        };
-
-        let requested_id = notification.id;
-        let saved_notification = self.repo.create(&notification).await?;
-        let id = saved_notification.id;
-
-        if id != requested_id {
-            return Ok(id);
-        }
-
-        // 2. Cache idempotency key in Redis
-        if let Some(ref key) = idempotency_key {
-            let cache_key = format!("idempotency:{key}");
-            if let Err(e) = self
-                .cache
-                .set_value(&cache_key, serde_json::json!(id), 3600)
-                .await
-            {
-                warn!("Failed to cache idempotency key for {id}: {e}");
-            }
-        }
-
-        // 3. Trigger dispatch via MQ or background task
-        if let Some(ref mq) = self.mq {
-            if let Err(e) = mq.publish_dispatch(id).await {
-                error!("Failed to publish dispatch task to MQ for {}: {}", id, e);
-                // Fallback to in-process dispatch
-                let orchestrator = self.clone();
-                tokio::spawn(async move {
-                    let _ = orchestrator.dispatch(id).await;
-                });
-            }
-        } else {
-            let orchestrator = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = orchestrator.dispatch(id).await {
-                    error!("Failed to dispatch notification {}: {}", id, e);
-                }
-            });
-        }
-
-        Ok(id)
-    }
-
-    /// Deliver a single notification by ID: render template → select
-    /// provider → send → update status.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the notification is not found, template rendering
-    /// fails, or the provider rejects the delivery.
-    pub async fn dispatch(self: Arc<Self>, id: Uuid) -> Result<()> {
-        let notification = self
-            .repo
-            .get_by_id(id)
-            .await?
-            .ok_or_else(|| NotiError::NotFound(format!("notification {id}")))?;
-
-        if notification.status != NotificationStatus::Pending
-            && notification.status != NotificationStatus::Processing
-        {
-            return Ok(());
-        }
-
-        // 1. Mark as processing
-        self.repo
-            .update_status(id, NotificationStatus::Processing, None, None)
-            .await?;
-
-        // 2. Render template
-        let content = match self
-            .template_engine
-            .render(&notification.template_id, &notification.variables)
-        {
-            Ok(c) => c,
-            Err(e) => {
-                self.repo
-                    .update_status(
-                        id,
-                        NotificationStatus::PermanentFailure,
-                        Some(e.to_string()),
-                        None,
-                    )
-                    .await?;
-                return Err(e);
-            }
-        };
-
-        // 3. Select provider by channel
-        let provider = match notification.channel {
-            NotificationChannel::Email => &self.email_provider,
-            NotificationChannel::Sms => &self.sms_provider,
-            NotificationChannel::Push => &self.push_provider,
-            NotificationChannel::Webhook => &self.webhook_provider,
-            NotificationChannel::WebSocket => &self.websocket_provider,
-        };
-
-        // 4. Send via provider
-        match provider.send(&notification.recipient, &content).await {
-            Ok(provider_ref) => {
-                self.repo
-                    .update_status(id, NotificationStatus::Sent, None, Some(provider_ref))
-                    .await?;
-                info!(
-                    "Successfully sent notification {} via {}",
-                    id,
-                    provider.provider_id()
-                );
-                Ok(())
-            }
-            Err(e) => {
-                const MAX_RETRIES: i32 = 5;
-                if notification.retry_count >= MAX_RETRIES {
-                    self.repo
-                        .update_status(
-                            id,
-                            NotificationStatus::PermanentFailure,
-                            Some(e.to_string()),
-                            None,
-                        )
-                        .await?;
-                } else {
-                    let retry_count = notification.retry_count + 1;
-                    let delay_ms =
-                        u32::from(2u16.saturating_pow(retry_count.unsigned_abs())) * 60 * 1000;
-                    let next_retry_at =
-                        Utc::now() + chrono::Duration::milliseconds(i64::from(delay_ms));
-
-                    self.repo.increment_retry(id, next_retry_at).await?;
-                    self.repo
-                        .update_status(id, NotificationStatus::Pending, Some(e.to_string()), None)
-                        .await?;
-
-                    if let Some(ref mq) = self.mq {
-                        if let Err(schedule_error) = mq.publish_retry(id, delay_ms).await {
-                            error!(
-                                "Failed to publish retry for notification {id}: {schedule_error}; falling back to in-process retry"
-                            );
-                            self.clone().spawn_in_process_retry(id, delay_ms);
-                        }
-                    } else {
-                        let orchestrator = self.clone();
-                        orchestrator.spawn_in_process_retry(id, delay_ms);
-                    }
-                    return Ok(());
-                }
-                Err(e)
-            }
-        }
-    }
-
-    /// Look up the current status of a notification.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the repository call fails.
-    pub async fn get_status(&self, id: Uuid) -> Result<Option<Notification>> {
-        self.repo.get_by_id(id).await
-    }
-
-    // ── User-facing Operations ───────────────────────────────────────────────
-
-    /// # Errors
-    ///
-    /// Returns an error if the repository call fails.
-    pub async fn list_user_notifications(
-        &self,
-        user_id: Uuid,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<Notification>> {
-        self.repo.list_by_user(user_id, limit, offset).await
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the repository call fails.
-    pub async fn mark_as_read(&self, id: Uuid, user_id: Uuid) -> Result<()> {
-        self.repo.mark_as_read(id, user_id).await
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the repository call fails.
-    pub async fn mark_all_as_read(&self, user_id: Uuid) -> Result<()> {
-        self.repo.mark_all_as_read(user_id).await
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the repository call fails.
-    pub async fn get_unread_count(&self, user_id: Uuid) -> Result<i64> {
-        self.repo.get_unread_count(user_id).await
-    }
-
-    fn spawn_in_process_retry(self: Arc<Self>, id: Uuid, delay_ms: u32) {
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(u64::from(delay_ms))).await;
-            if let Err(e) = self.dispatch(id).await {
-                error!("Failed to retry notification {id}: {e}");
-            }
-        });
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noti_core::domain::NotificationChannel;
+    use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
+    use noti_core::error::{NotiError, Result};
     use serde_json::json;
     use std::sync::Mutex;
+    use uuid::Uuid;
 
     struct MockRepo {
         saved: Mutex<Vec<Notification>>,
@@ -349,6 +114,9 @@ mod tests {
         }
         async fn get_pending_for_retry(&self, _limit: i32) -> Result<Vec<Notification>> {
             Ok(vec![])
+        }
+        async fn reset_stuck_processing(&self, _threshold: i64) -> Result<u64> {
+            Ok(0)
         }
         async fn list_by_user(&self, _u: Uuid, _l: i64, _o: i64) -> Result<Vec<Notification>> {
             Ok(vec![])

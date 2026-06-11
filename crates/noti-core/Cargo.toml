@@ -14,4 +14,13 @@ uuid.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 config.workspace = true
-sqlx = { workspace = true, features = ["macros"] }
+
+[features]
+mocks = ["mockall"]
+
+[dev-dependencies]
+mockall.workspace = true
+
+[dependencies.mockall]
+workspace = true
+optional = true

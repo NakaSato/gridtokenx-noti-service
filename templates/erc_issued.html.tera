@@ -1,54 +1,10 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f5f7fa;
-            color: #333333;
-            line-height: 1.6;
-        }
-        .email-wrapper {
-            width: 100%;
-            background-color: #f5f7fa;
-            padding: 40px 0;
-        }
-        .email-container {
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #ffffff;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-        }
-        .email-header {
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            padding: 32px 40px;
-            text-align: center;
-        }
-        .email-header h1 {
-            margin: 0;
-            color: #ffffff;
-            font-size: 24px;
-            font-weight: 600;
-        }
-        .email-header p {
-            margin: 8px 0 0;
-            color: rgba(255, 255, 255, 0.9);
-            font-size: 14px;
-        }
-        .email-body {
-            padding: 40px;
-        }
-        .email-body p {
-            margin: 0 0 20px;
-            font-size: 16px;
-            color: #4a5568;
-        }
+{% extends "base.html.tera" %}
+
+{% block subject %}New Renewable Energy Certificate issued{% endblock subject %}
+{% block title %}🏆 New Certificate Issued!{% endblock title %}
+{% block subtitle %}Renewable Energy Certificate (ERC){% endblock subtitle %}
+
+{% block extra_styles %}
         .certificate-card {
             background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
             border: 2px solid #a7f3d0;
@@ -75,31 +31,9 @@
             text-transform: uppercase;
             letter-spacing: 1px;
         }
-        .email-footer {
-            padding: 24px 40px;
-            background-color: #f7fafc;
-            border-top: 1px solid #e2e8f0;
-            text-align: center;
-        }
-        .email-footer p {
-            margin: 0;
-            font-size: 13px;
-            color: #718096;
-        }
-        .email-footer .brand {
-            font-weight: 600;
-            color: #059669;
-        }
-    </style>
-</head>
-<body>
-    <div class="email-wrapper">
-        <div class="email-container">
-            <div class="email-header">
-                <h1>🏆 New Certificate Issued!</h1>
-                <p>Renewable Energy Certificate (ERC)</p>
-            </div>
-            <div class="email-body">
+{% endblock extra_styles %}
+
+{% block content %}
                 <p>Congratulations!</p>
                 <p>
                     Your contribution to the green grid has been recorded. A new
@@ -107,19 +41,11 @@
                 </p>
                 <div class="certificate-card">
                     <p class="amount">{{ amount }}</p>
-                    <p class="unit">grTHB</p>
+                    <p class="unit">MWh</p>
                     <p class="label">Energy Certified</p>
                 </div>
-                <p style="font-size: 14px; color: #718096; text-align: center;">
+                <p class="muted" style="text-align: center;">
                     This certificate is verifiable on the Solana blockchain and represents
                     your validated renewable energy contribution.
                 </p>
-            </div>
-            <div class="email-footer">
-                <p>&copy; 2026 <span class="brand">GridTokenX</span>. All rights reserved.</p>
-                <p style="margin-top: 8px;">This is an automated message. Please do not reply to this email.</p>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
+{% endblock content %}

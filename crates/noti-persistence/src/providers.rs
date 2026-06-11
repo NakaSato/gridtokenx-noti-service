@@ -1,6 +1,7 @@
 //! Notification delivery providers implementing `NotificationProviderTrait`.
 
 pub mod smtp;
+pub mod webhook;
 pub mod websocket;
 
 use async_trait::async_trait;

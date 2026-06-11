@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Runtime SQLx queries only (no compile-time `query!` macros), so no DB
+  # is needed to build or test. Skip any accidental online query checks.
+  SQLX_OFFLINE: "true"
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      # noti-service depends on two siblings via `../` path-deps:
+      #   - gridtokenx-blockchain-core (a submodule of the superproject)
+      #   - gridtokenx-telemetry       (an in-tree dir of the superproject)
+      # Reconstruct that layout by checking out the superproject, then
+      # overlaying this PR's noti-service code into its submodule slot.
+      - name: Checkout superproject (gridtokenx-coresystem)
+        uses: actions/checkout@v4
+        with:
+          repository: NakaSato/gridtokenx-coresystem
+          path: coresystem
+          # Submodules left uninitialized; we init only blockchain-core below
+          # to avoid pulling ~10 unrelated (possibly private) submodules.
+
+      - name: Init blockchain-core submodule
+        working-directory: coresystem
+        run: git submodule update --init --depth 1 gridtokenx-blockchain-core
+
+      - name: Overlay this repo's code into the noti-service slot
+        uses: actions/checkout@v4
+        with:
+          # Defaults to the triggering repo + ref (the PR/push commit).
+          path: coresystem/gridtokenx-noti-service
+
+      - name: Install system build deps
+        run: |
+          sudo apt-get update
+          # protobuf-compiler: proto codegen (prost/tonic/connectrpc-build)
+          # libsasl2-dev + libssl-dev: librdkafka build (rdkafka crate)
+          # cmake + pkg-config are preinstalled on ubuntu-latest.
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler libsasl2-dev libssl-dev
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: coresystem/gridtokenx-noti-service
+
+      - name: Install sqlx-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli
+
+      - name: Build
+        working-directory: coresystem/gridtokenx-noti-service
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        working-directory: coresystem/gridtokenx-noti-service
+        run: cargo test --workspace

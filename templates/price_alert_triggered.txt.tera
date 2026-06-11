@@ -1,0 +1,5 @@
+Price Alert Triggered
+---------------------
+Your price alert ({{ condition }} {{ target_price }}) has fired.
+Market price: {{ triggered_price }}
+Timestamp: {{ now() | date(format="%Y-%m-%d %H:%M:%S") }}

@@ -1,10 +1,13 @@
-Hello {{ name }},
+Hello{% if name %} {{ name }}{% endif %},
 
-Please verify your email address by clicking the link below:
+Thanks for signing up for GridTokenX. Confirm this email address to
+activate your account and unlock sign-in, wallet linking, and trading:
 
 {{ verification_url }}
 
-If you did not create an account with GridTokenX, please ignore this email.
+You'll be signed in automatically after verifying.
 
-Best regards,
-GridTokenX Team
+If you didn't create a GridTokenX account, ignore this email — the
+account stays inactive and no one can sign in with it.
+
+— The GridTokenX Team

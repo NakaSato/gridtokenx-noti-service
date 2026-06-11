@@ -1,1 +1,9 @@
-Hello {{ name }}, welcome to GridTokenX!
+Welcome to GridTokenX
+---------------------
+Hello{% if name %} {{ name }}{% endif %},
+
+Your email is verified and your account is now active. You can now trade
+renewable energy tokens (GRX), earn Renewable Energy Certificates (ERCs),
+connect smart meters, and link your Solana wallet.
+
+Get started: {{ dashboard_url | default(value="https://app.gridtokenx.xyz") }}

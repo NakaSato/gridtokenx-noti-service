@@ -1,0 +1,32 @@
+{% extends "base.html.tera" %}
+
+{% block subject %}Confirm your wallet to link it on-chain{% endblock subject %}
+{% block title %}🔗 Confirm Your Wallet{% endblock title %}
+{% block subtitle %}One click to link your Solana wallet on-chain{% endblock subtitle %}
+
+{% block content %}
+                <p>Hello{% if name %} <strong>{{ name }}</strong>{% endif %},</p>
+                <p>
+                    A Solana wallet is being linked to your <strong>GridTokenX</strong>
+                    account. To finish, confirm that this wallet is yours — we'll then
+                    register the link on-chain so you can settle trades from it.
+                </p>
+                <div class="link-fallback" style="word-break: break-all;">
+                    <strong>Wallet:</strong> {{ wallet_address }}
+                </div>
+                <p style="text-align: center; margin: 32px 0;">
+                    <a href="{{ confirmation_url }}" class="btn">✓ Confirm My Wallet</a>
+                </p>
+                <p class="muted" style="text-align: center;">
+                    This link expires in 30 minutes.
+                </p>
+                <div class="divider"></div>
+                <p class="muted">
+                    If the button doesn't work, copy and paste this link into your browser:
+                </p>
+                <div class="link-fallback"><a href="{{ confirmation_url }}" style="color: #059669; text-decoration: none;">{{ confirmation_url }}</a></div>
+                <p class="muted" style="margin-top: 24px;">
+                    If you didn't request this, ignore this email — the wallet stays unlinked
+                    and is never registered on-chain.
+                </p>
+{% endblock content %}

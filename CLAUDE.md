@@ -11,18 +11,25 @@ cargo test                               # Run all tests
 cargo test -p noti-logic                 # Test a single crate
 cargo test test_queue_notification       # Run a specific test by name
 cargo run --package noti-server          # Run the service locally
-cargo clippy -- -D warnings             # Lint (workspace lints deny unwrap_used)
+cargo clippy -- -D warnings             # Lint (clippy::pedantic warn, unwrap_used deny)
 ```
 
-Database migrations use `sqlx-cli`:
+Database migrations use `sqlx-cli` (`migrations/`, sqlx 0.8 compile-time checked):
 ```bash
 sqlx migrate run --database-url "$DATABASE_URL"
 sqlx migrate add <name>
 ```
 
+Smoke-test running service against live HTTP/gRPC endpoints:
+```bash
+./scripts/test_endpoints.sh              # curl health, CRUD, WebSocket upgrade
+```
+
+> Deeper references: [ARCHITECTURE.md](ARCHITECTURE.md) (layered diagrams, hexagonal ports/adapters), [README.md](README.md) (service role, channel list), `noti-service-design.md` (design rationale).
+
 ## Architecture
 
-Modular monolith Cargo workspace. Edition 2024. Six crates with strict downward dependency flow:
+Modular monolith Cargo workspace, **hexagonal (ports & adapters)**. Edition 2024. Six crates with strict downward (acyclic) dependency flow:
 
 ```
 bin/noti-server → noti-api → noti-logic → noti-core
@@ -80,6 +87,7 @@ Environment-driven (loaded via `dotenvy` + `config` crate). Key variables:
 
 Workspace-level lints in root `Cargo.toml`:
 - `unsafe_code = "deny"`
+- `clippy::pedantic = "warn"` (priority -1)
 - `clippy::unwrap_used = "deny"` — use `?` with `.context()` or `.expect("reason")` only in init code
 
 ## Templates

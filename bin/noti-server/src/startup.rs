@@ -22,14 +22,19 @@ use noti_persistence::cache::CacheService;
 use noti_persistence::messaging::kafka;
 use noti_persistence::messaging::rabbitmq::RabbitMQClient;
 use noti_persistence::providers::smtp::SmtpProvider;
-use noti_persistence::providers::{
-    MockEmailProvider, MockPushProvider, MockSmsProvider, MockWebhookProvider,
-};
+use noti_persistence::providers::webhook::WebhookProvider;
+use noti_persistence::providers::{MockEmailProvider, MockPushProvider, MockSmsProvider};
 use noti_persistence::repository::NotificationRepository;
 use noti_persistence::templating::TemplateEngine;
 use noti_protocol::noti::NotificationServiceExt;
 
 use crate::consumers;
+
+/// Reset `Processing` rows untouched for longer than this (a crash mid-dispatch)
+/// back to `Pending` during the boot recovery sweep.
+const STUCK_PROCESSING_SECS: i64 = 300;
+/// Max notifications re-dispatched per boot recovery sweep.
+const RECOVERY_BATCH: i32 = 1000;
 
 /// Runs the notification service with the given configuration.
 ///
@@ -93,19 +98,20 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     );
     info!("✅ Redis cache service connected");
 
-    // c) Message Queue (RabbitMQ for retries)
-    let mq_client = if config.rabbitmq_url.is_empty() {
-        warn!("⚠️ No RabbitMQ URL configured, retries will be in-memory only");
-        None
-    } else {
-        let client = Arc::new(
-            RabbitMQClient::new(&config.rabbitmq_url)
-                .await
-                .context("Failed to connect to RabbitMQ")?,
+    // c) Message Queue (RabbitMQ) — REQUIRED for durable retries.
+    // The in-process retry fallback loses scheduled retries on restart, so a
+    // durable broker is mandatory; refuse to start without it.
+    if config.rabbitmq_url.is_empty() {
+        anyhow::bail!(
+            "RABBITMQ_URL is required: durable retry queue cannot start without a broker"
         );
-        info!("✅ RabbitMQ connected");
-        Some(client)
-    };
+    }
+    let mq_client = Some(Arc::new(
+        RabbitMQClient::new(&config.rabbitmq_url)
+            .await
+            .context("Failed to connect to RabbitMQ")?,
+    ));
+    info!("✅ RabbitMQ connected");
 
     let mq = mq_client.clone().map(|c| c as Arc<dyn MessageQueueTrait>);
 
@@ -137,10 +143,10 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         Arc::new(MockEmailProvider)
     };
 
-    // Other Providers (Mocks for now)
+    // SMS / Push remain mocks (local capture sink); Webhook is a real HTTP POST.
     let sms_provider = Arc::new(MockSmsProvider);
     let push_provider = Arc::new(MockPushProvider);
-    let webhook_provider = Arc::new(MockWebhookProvider);
+    let webhook_provider = Arc::new(WebhookProvider::new());
 
     let ws_manager = Arc::new(ConnectionManager::new());
     let websocket_provider = Arc::new(
@@ -175,6 +181,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         let topics = vec![
             config.kafka_topic_user_events.clone(),
             config.kafka_topic_audit_events.clone(),
+            config.kafka_topic_trading_triggers.clone(),
         ];
         let orch = orchestrator.clone();
         let frontend_url = config.frontend_url.clone();
@@ -197,6 +204,21 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
                 error!("RabbitMQ consumer failed: {}", e);
             }
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // 4b. Crash recovery sweep
+    // -----------------------------------------------------------------------
+    // Re-dispatch notifications a previous crash left undelivered: rows stuck
+    // in `Processing` are reset to `Pending`, then all currently-due `Pending`
+    // rows are re-published to the (durable) dispatch queue.
+    match orchestrator
+        .recover_pending(STUCK_PROCESSING_SECS, RECOVERY_BATCH)
+        .await
+    {
+        Ok(0) => info!("✅ Crash recovery: no pending notifications to re-dispatch"),
+        Ok(n) => info!("✅ Crash recovery: re-dispatched {n} pending notification(s)"),
+        Err(e) => warn!("⚠️ Crash recovery sweep failed: {e}"),
     }
 
     // -----------------------------------------------------------------------
