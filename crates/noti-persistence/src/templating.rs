@@ -18,7 +18,10 @@ impl TemplateEngine {
         let mut tera = Tera::new(&format!("{templates_path}/**/*"))
             .map_err(|e| anyhow::anyhow!("Failed to initialize Tera engine: {e}"))?;
 
-        tera.autoescape_on(vec!["html"]);
+        // Templates are named `*.html.tera`, so the suffix to match is
+        // `html.tera` (not `html`). Matching on `html` alone escaped nothing,
+        // leaving HTML emails open to markup injection via user-supplied vars.
+        tera.autoescape_on(vec!["html.tera"]);
 
         Ok(Self { tera })
     }

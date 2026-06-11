@@ -22,6 +22,22 @@ pub fn build_callback_url(frontend_url: Option<&str>, path: &str, query: &str) -
     }
 }
 
+/// Percent-encode a string for safe use inside a URL query value.
+/// Unreserved characters (RFC 3986 §2.3) pass through; everything else,
+/// including `@` and `+` common in email addresses, is escaped.
+pub fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// Rewrite the base URL (scheme + host + port) of `upstream_url` to use
 /// `frontend_url` when configured. Preserves the original path and query string.
 ///
@@ -49,7 +65,13 @@ pub fn rewrite_url(frontend_url: Option<&str>, upstream_url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_callback_url, rewrite_url};
+    use super::{build_callback_url, rewrite_url, urlencode};
+
+    #[test]
+    fn urlencode_escapes_email_characters() {
+        assert_eq!(urlencode("a+b@grx.test"), "a%2Bb%40grx.test");
+        assert_eq!(urlencode("plain-user_1.x~y"), "plain-user_1.x~y");
+    }
 
     #[test]
     fn build_callback_url_inserts_missing_leading_slash() {

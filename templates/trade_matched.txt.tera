@@ -1,4 +1,7 @@
-You have a new trade match!
+Trade Matched
+-------------
+You have a new trade match.
+
 Role: {{ role }}
 Amount: {{ amount }}
 Price: {{ price }}

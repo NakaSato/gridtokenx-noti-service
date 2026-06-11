@@ -24,6 +24,7 @@ WORKDIR /app
 # Copy dependency manifests and project structure
 COPY gridtokenx-noti-service/ gridtokenx-noti-service/
 COPY gridtokenx-blockchain-core/ gridtokenx-blockchain-core/
+COPY gridtokenx-telemetry/ gridtokenx-telemetry/
 
 WORKDIR /app/gridtokenx-noti-service
 

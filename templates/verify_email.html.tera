@@ -1,135 +1,30 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f5f7fa;
-            color: #333333;
-            line-height: 1.6;
-        }
-        .email-wrapper {
-            width: 100%;
-            background-color: #f5f7fa;
-            padding: 40px 0;
-        }
-        .email-container {
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #ffffff;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-        }
-        .email-header {
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            padding: 32px 40px;
-            text-align: center;
-        }
-        .email-header h1 {
-            margin: 0;
-            color: #ffffff;
-            font-size: 24px;
-            font-weight: 600;
-        }
-        .email-header p {
-            margin: 8px 0 0;
-            color: rgba(255, 255, 255, 0.9);
-            font-size: 14px;
-        }
-        .email-body {
-            padding: 40px;
-        }
-        .email-body p {
-            margin: 0 0 24px;
-            font-size: 16px;
-            color: #4a5568;
-        }
-        .verification-button {
-            display: inline-block;
-            padding: 14px 32px;
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            color: #ffffff;
-            text-decoration: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            text-align: center;
-            margin: 8px 0 24px;
-        }
-        .verification-button:hover {
-            background: linear-gradient(135deg, #059669 0%, #047857 100%);
-        }
-        .verification-link-fallback {
-            margin-top: 16px;
-            padding: 16px;
-            background-color: #f7fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 6px;
-            font-size: 13px;
-            color: #718096;
-            word-break: break-all;
-        }
-        .email-footer {
-            padding: 24px 40px;
-            background-color: #f7fafc;
-            border-top: 1px solid #e2e8f0;
-            text-align: center;
-        }
-        .email-footer p {
-            margin: 0;
-            font-size: 13px;
-            color: #718096;
-        }
-        .email-footer .brand {
-            font-weight: 600;
-            color: #059669;
-        }
-        .divider {
-            height: 1px;
-            background-color: #e2e8f0;
-            margin: 24px 0;
-        }
-    </style>
-</head>
-<body>
-    <div class="email-wrapper">
-        <div class="email-container">
-            <div class="email-header">
-                <h1>🔐 Verify Your Email</h1>
-                <p>GridTokenX Account Verification</p>
-            </div>
-            <div class="email-body">
-                <p>Hello <strong>{{ name }}</strong>,</p>
+{% extends "base.html.tera" %}
+
+{% block subject %}Confirm your email to activate your GridTokenX account{% endblock subject %}
+{% block title %}⚡ One Click to Activate{% endblock title %}
+{% block subtitle %}Confirm your email to start trading energy{% endblock subtitle %}
+
+{% block content %}
+                <p>Hello{% if name %} <strong>{{ name }}</strong>{% endif %},</p>
                 <p>
-                    Welcome to <strong>GridTokenX</strong>! To complete your registration and activate your account wallet, 
-                    please verify your email address by clicking the button below:
+                    Thanks for signing up for <strong>GridTokenX</strong> — the peer-to-peer
+                    energy trading platform. Your account is almost ready: confirm this email
+                    address to activate it and unlock sign-in, wallet linking, and trading.
                 </p>
-                <p style="text-align: center;">
-                    <a href="{{ verification_url }}" class="verification-button">
-                        ✓ Verify Email Address
-                    </a>
+                <p style="text-align: center; margin: 32px 0;">
+                    <a href="{{ verification_url }}" class="btn">✓ Verify My Email</a>
+                </p>
+                <p class="muted" style="text-align: center;">
+                    One click — you'll be signed in automatically afterwards.
                 </p>
                 <div class="divider"></div>
-                <p style="font-size: 14px; color: #718096;">
-                    If the button above doesn't work, copy and paste this link into your browser:
+                <p class="muted">
+                    If the button doesn't work, copy and paste this link into your browser:
                 </p>
-                <div class="verification-link-fallback">
-                    {{ verification_url }}
-                </div>
-                <p style="margin-top: 24px; font-size: 14px; color: #718096;">
-                    This verification link will expire in 24 hours. If you didn't create a GridTokenX account, you can safely ignore this email.
+                <div class="link-fallback"><a href="{{ verification_url }}" style="color: #059669; text-decoration: none;">{{ verification_url }}</a></div>
+                <p class="muted" style="margin-top: 24px;">
+                    You're receiving this because this address was used to register a GridTokenX
+                    account. If that wasn't you, ignore this email — the account stays inactive
+                    and no one can sign in with it.
                 </p>
-            </div>
-            <div class="email-footer">
-                <p>&copy; 2026 <span class="brand">GridTokenX</span>. All rights reserved.</p>
-                <p style="margin-top: 8px;">This is an automated message. Please do not reply to this email.</p>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
+{% endblock content %}

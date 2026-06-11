@@ -15,7 +15,7 @@ use uuid::Uuid;
 use noti_core::domain::NotificationChannel;
 use noti_logic::NotificationOrchestrator;
 
-use super::url::{build_callback_url, rewrite_url};
+use super::url::{build_callback_url, rewrite_url, urlencode};
 
 /// Kafka message coordinates, used to derive idempotency keys.
 pub struct MsgCtx {
@@ -39,7 +39,9 @@ fn into_anyhow(e: noti_core::error::NotiError) -> anyhow::Error {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-struct UserRegistered {
+struct EmailVerified {
+    #[serde(default)]
+    user_id: Option<String>,
     #[serde(default)]
     email: String,
     #[serde(default)]
@@ -114,6 +116,8 @@ struct PasswordResetRequested {
 
 #[derive(Debug, Deserialize)]
 struct VerificationEmailRequested {
+    #[serde(default)]
+    user_id: Option<String>,
     #[serde(default)]
     email: String,
     #[serde(default)]
@@ -197,7 +201,11 @@ pub async fn dispatch(
     data: Value,
 ) -> anyhow::Result<()> {
     match event_type {
-        "UserRegistered" => user_registered(orchestrator, ctx, data).await,
+        // Registration itself only triggers the verification email (sent via
+        // VerificationEmailRequested, which carries the token). The welcome
+        // email goes out once the address is proven via EmailVerified.
+        "UserRegistered" => Ok(()),
+        "EmailVerified" => email_verified(orchestrator, frontend_url, ctx, data).await,
         "OrderMatched" => order_matched(orchestrator, ctx, data).await,
         "SettlementProcessed" => settlement_processed(orchestrator, ctx, data).await,
         "ErcIssued" => erc_issued(orchestrator, ctx, data).await,
@@ -219,12 +227,13 @@ pub async fn dispatch(
     }
 }
 
-async fn user_registered(
+async fn email_verified(
     orchestrator: &Arc<NotificationOrchestrator>,
+    frontend_url: Option<&str>,
     ctx: &MsgCtx,
     data: Value,
 ) -> anyhow::Result<()> {
-    let Some(p) = parse::<UserRegistered>("UserRegistered", data) else {
+    let Some(p) = parse::<EmailVerified>("EmailVerified", data) else {
         return Ok(());
     };
 
@@ -232,16 +241,20 @@ async fn user_registered(
         return Ok(());
     }
 
+    let dashboard_url = frontend_url
+        .map(|base| base.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "https://app.gridtokenx.xyz".to_string());
+
     orchestrator
         .queue_notification(
-            None,
+            parse_uuid(p.user_id.as_deref()),
             NotificationChannel::Email,
             p.email,
             "welcome.html.tera".to_string(),
-            serde_json::json!({ "name": p.username }),
+            serde_json::json!({ "name": p.username, "dashboard_url": dashboard_url }),
             Some(format!(
-                "kafka:{}:{}:{}",
-                ctx.topic, ctx.partition, ctx.offset
+                "kafka:email_verified:{}:{}",
+                ctx.partition, ctx.offset
             )),
         )
         .await
@@ -510,13 +523,15 @@ async fn verification_email_requested(
 
     // Rewrite upstream base URL to frontend_url when configured;
     // fall back to constructing from token when upstream provides nothing.
+    // The trading UI serves the verification page at `/verify` and reads the
+    // `token` and `email` query params (gridtokenx-trading/app/verify/page.tsx).
     let verification_url = if !p.verification_url.is_empty() {
         rewrite_url(frontend_url, &p.verification_url)
     } else if !p.token.is_empty() {
         build_callback_url(
             frontend_url,
-            "verify-email",
-            &format!("token={}&email={}", p.token, p.email),
+            "verify",
+            &format!("token={}&email={}", urlencode(&p.token), urlencode(&p.email)),
         )
     } else {
         p.verification_url.clone()
@@ -526,9 +541,18 @@ async fn verification_email_requested(
         return Ok(());
     }
 
+    if verification_url.is_empty() {
+        warn!(
+            "Skipping verification email for {}: no verification URL \
+             (FRONTEND_URL unconfigured and event carried neither url nor token)",
+            p.email
+        );
+        return Ok(());
+    }
+
     orchestrator
         .queue_notification(
-            None,
+            parse_uuid(p.user_id.as_deref()),
             NotificationChannel::Email,
             p.email,
             "verify_email.html.tera".to_string(),
@@ -698,13 +722,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_registered_queues_welcome_email() {
+    async fn user_registered_sends_no_email() {
         let (orch, sink) = test_orchestrator();
         let data = serde_json::json!({ "email": "alice@example.com", "username": "alice" });
 
         dispatch(&orch, None, &ctx(), "UserRegistered", data)
             .await
             .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn email_verified_queues_welcome_email() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "email": "alice@example.com", "username": "alice" });
+
+        dispatch(
+            &orch,
+            Some("https://app.gridtokenx.test/"),
+            &ctx(),
+            "EmailVerified",
+            data,
+        )
+        .await
+        .expect("dispatch ok");
 
         let queued = sink.lock().expect("lock");
         assert_eq!(queued.len(), 1);
@@ -713,17 +755,67 @@ mod tests {
         assert_eq!(n.recipient, "alice@example.com");
         assert_eq!(n.template_id, "welcome.html.tera");
         assert_eq!(
+            n.variables["dashboard_url"],
+            "https://app.gridtokenx.test"
+        );
+        assert_eq!(
             n.idempotency_key.as_deref(),
-            Some("kafka:iam.user.events:2:99")
+            Some("kafka:email_verified:2:99")
         );
     }
 
     #[tokio::test]
-    async fn user_registered_skips_empty_email() {
+    async fn email_verified_skips_empty_email() {
         let (orch, sink) = test_orchestrator();
         let data = serde_json::json!({ "email": "", "username": "ghost" });
 
-        dispatch(&orch, None, &ctx(), "UserRegistered", data)
+        dispatch(&orch, None, &ctx(), "EmailVerified", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn verification_email_builds_frontend_verify_link_from_token() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "email": "bob+test@example.com",
+            "username": "bob",
+            "token": "tok-123"
+        });
+
+        dispatch(
+            &orch,
+            Some("https://app.gridtokenx.test/"),
+            &ctx(),
+            "VerificationEmailRequested",
+            data,
+        )
+        .await
+        .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1);
+        let n = &queued[0];
+        assert_eq!(n.template_id, "verify_email.html.tera");
+        assert_eq!(
+            n.variables["verification_url"],
+            "https://app.gridtokenx.test/verify?token=tok-123&email=bob%2Btest%40example.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn verification_email_skips_when_no_url_can_be_built() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "email": "bob@example.com",
+            "username": "bob",
+            "token": "tok-123"
+        });
+
+        // frontend_url unset and no upstream verification_url → no broken email
+        dispatch(&orch, None, &ctx(), "VerificationEmailRequested", data)
             .await
             .expect("dispatch ok");
 

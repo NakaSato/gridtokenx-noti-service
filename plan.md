@@ -21,7 +21,7 @@ gridtokenx-noti-service/
 ├── templates/                       # Tera templates: <name>.txt.tera / .html.tera
 ├── crates/
 │   ├── noti-core/                   # ① DOMAIN: domain.rs, traits.rs, error.rs, config.rs. NO tokio/sqlx/transport
-│   ├── noti-persistence/            # ② ADAPTERS: repository, cache, templating, messaging/, providers/
+│   ├── noti-persistence/            # ② ADAPTERS: repository, cache, templating, messaging/, providers/{smtp,webhook,websocket}
 │   ├── noti-logic/                  # ③ ORCHESTRATION: orchestrator/{mod,queue,dispatch,query}.rs
 │   ├── noti-protocol/               # generated proto code (build.rs → OUT_DIR/_noti_include.rs)
 │   └── noti-api/                    # ④ TRANSPORT: handlers, grpc, websocket, auth
@@ -29,7 +29,7 @@ gridtokenx-noti-service/
     └── noti-server/                 # binary: main, startup, telemetry, consumers/{mod,events,url}.rs
 ```
 
-**Not present** (despite project-wide template): `rust-toolchain.toml`, `deny.toml` (cargo-deny not configured), `proto/buf.yaml` (codegen uses `connectrpc_build` directly), top-level `tests/` dir (tests are inline `#[cfg(test)]`).
+**Not present** (despite project-wide template): `rust-toolchain.toml`, `deny.toml` (cargo-deny not configured), `proto/buf.yaml` (codegen uses `connectrpc_build` directly), top-level `tests/` dir. Tests are mostly inline `#[cfg(test)]`; one crate-level integration test exists: `crates/noti-logic/tests/webhook_dispatch.rs`.
 
 Transport is split: `noti-api` (crate — handlers/services) + `bin/noti-server` (binary — wires `Arc<dyn Trait>` deps in `startup::run()`, hosts Kafka + RabbitMQ consumers).
 
@@ -40,7 +40,7 @@ Transport is split: `noti-api` (crate — handlers/services) + `bin/noti-server`
 | Crate | Owns | Forbidden imports | Key deps |
 |---|---|---|---|
 | **noti-core** | `Notification`, `NotificationChannel`, `NotificationStatus`, DI traits, `Config`, `NotiError` (thiserror) | `tokio`, `sqlx`, `redis`, `rdkafka`, `lapin`, `axum`, `connectrpc`, `tonic` | `serde`, `chrono`, `uuid`, `thiserror`, `async-trait` |
-| **noti-persistence** | Trait *impls*: `repository.rs` (Sqlx repo), `cache.rs` (Redis), `messaging/{kafka,rabbitmq}.rs`, `providers/{smtp,websocket}.rs`, `providers.rs` (mocks), `templating.rs` (Tera). | `axum`, `connectrpc`, non-I/O business logic | `noti-core`, `sqlx`, `redis`, `rdkafka`, `lapin`, `lettre`, `tera` |
+| **noti-persistence** | Trait *impls*: `repository.rs` (Sqlx repo), `cache.rs` (Redis), `messaging/{kafka,rabbitmq}.rs`, `providers/{smtp,webhook,websocket}.rs`, `providers.rs` (mocks), `templating.rs` (Tera). | `axum`, `connectrpc`, non-I/O business logic | `noti-core`, `sqlx`, `redis`, `rdkafka`, `lapin`, `lettre`, `tera`, `reqwest` |
 | **noti-logic** | `NotificationOrchestrator` — queue/dispatch/retry, channel→provider mapping | `axum`, `tonic::transport`, raw connectrpc handlers | `noti-core` (+`mocks` in dev), `noti-persistence`, `tokio`, `tracing` |
 | **noti-api** | Axum REST handlers, ConnectRPC service (`grpc.rs`), JWT auth (`auth.rs`), WebSocket `ConnectionManager` (`DashMap`) | Business logic (delegate to `-logic`) | `noti-core`, `noti-logic`, `noti-protocol`, `axum`, `connectrpc`, `tower-http` |
 | **noti-protocol** | `build.rs` codegen for `noti.proto`; re-exports generated types. Pure DTO crate. | Everything else | `buffa`/`prost`, `connectrpc-build`, `tonic` |
@@ -78,7 +78,7 @@ noti-core = { workspace = true, features = ["mocks"] }
 
 ## 3. Notification Flow
 
-1. **Ingestion**: Kafka consumer (`bin/noti-server/src/consumers/`) subscribes to topics `kafka_topic_user_events` (default `iam.user.events`) and `kafka_topic_audit_events` (default `iam.audit.events`). `consumers/mod.rs::handle_kafka_message` decodes, then `events.rs::route` matches `event_type` → typed handler. **13 routed event types**: `UserRegistered`, `OrderMatched`, `SettlementProcessed`, `ErcIssued`, `VppDispatched`, `PasswordResetRequested`, `VerificationEmailRequested`, `UserOnboarded`, `MeterOnboarded`, `UserWalletLinked` (+ inline arms). Each → `orchestrator.queue_notification()`.
+1. **Ingestion**: Kafka consumer (`bin/noti-server/src/consumers/`) subscribes to topics `kafka_topic_user_events` (default `iam.user.events`) and `kafka_topic_audit_events` (default `iam.audit.events`). `consumers/mod.rs::handle_kafka_message` decodes, then `events.rs::route` matches `event_type` → typed handler. **10 routed event types**: `UserRegistered`, `OrderMatched`, `SettlementProcessed`, `ErcIssued`, `VppDispatched`, `PasswordResetRequested`, `VerificationEmailRequested`, `UserOnboarded`, `MeterOnboarded`, `UserWalletLinked`; unknown types hit `other => warn`. Most → `orchestrator.queue_notification()` (`SettlementProcessed` only logs today).
 2. **Queue** (`orchestrator/queue.rs`): dual-layer idempotency — repo `create()` returns the existing row on `idempotency_key` conflict (source of truth), *then* caches `idempotency:{key}` in Redis 3600s (best-effort). Persist (Postgres) → `mq.publish_dispatch(id)` (RabbitMQ `noti.dispatch`). If MQ fails / absent → `tokio::spawn` in-process dispatch.
 3. **Dispatch** (`orchestrator/dispatch.rs`): RabbitMQ consumer → `orchestrator.dispatch()` renders Tera template, selects provider by channel, sends.
 4. **Retry**: on failure, `MAX_RETRIES = 5`, backoff `delay_ms = 2^retry_count * 60 * 1000` (exponential, minutes); status reset to `Pending`, scheduled via RabbitMQ DLX TTL (`publish_retry`), or in-process `spawn_in_process_retry` fallback. At/over max → `PermanentFailure`.
@@ -127,21 +127,28 @@ gridtokenx-telemetry       = { path = "../gridtokenx-telemetry" }
 
 # Async runtime
 tokio = { version = "1.48", features = ["rt-multi-thread","macros","io-util","time","sync","signal","parking_lot"] }
+tokio-util = "0.7.18"
+futures = "0.3"
 async-trait = "0.1"
 
 # Web / transport
 axum = { version = "0.8.7", features = ["macros"] }
+tower = { version = "0.5.2", features = ["full"] }
 tower-http = { version = "0.6.1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }   # webhook provider HTTP client
 connectrpc = { version = "0.6.1", features = ["axum","server","client"] }
-tonic = "0.12.3"
+tonic = { version = "0.12.3", features = ["tls-native-roots"] }
 prost = "0.13"
 buffa = "0.6.0"
+buffa-types = "0.6.0"
+http = "1.0.0"; http-body = "1.0.0"
 
 # HTTP/3 (declared, not yet wired)
 quinn = { version = "0.11", features = ["rustls"] }
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
 rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2.0"
 
 # Persistence
 sqlx = { version = "0.8", features = ["macros","postgres","runtime-tokio-rustls","chrono","uuid","rust_decimal","migrate"] }
@@ -160,14 +167,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter","json"] }
 metrics = "0.24"
 metrics-exporter-prometheus = "0.17"
 
-# Errors, IDs, serde, config, concurrency, test
+# Errors, IDs, serde, config, concurrency, regex, test
 anyhow = "1.0"; thiserror = "2.0"
 uuid = { version = "1.0", features = ["v4","v5","serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }; serde_json = "1.0"
 config = "0.15.19"; dotenvy = "0.15"
 dashmap = "6.1"          # WebSocket connection registry
+regex = "1.11"
 mockall = "0.13"
+
+# Build deps
+buffa-build = "0.6.0"; connectrpc-build = "0.6.1"; prost-build = "0.13"; tonic-build = "0.12.3"
 
 [profile.release]
 opt-level = 3; lto = true; codegen-units = 1; panic = "abort"; strip = true
@@ -177,7 +188,7 @@ opt-level = 3; lto = true; codegen-units = 1; panic = "abort"; strip = true
 
 ## 6. Configuration (from `noti-core/config.rs`)
 
-Loaded via `config` + `dotenvy`, `RUN_MODE`-driven (`config/default`, `config/{run_mode}`, then env).
+Loaded via `config` + `dotenvy`, `RUN_MODE`-driven (default `development`). Source order: `config/default` → `config/{run_mode}` → env (`__` separator) → `APP__`-prefixed env overrides.
 
 | Variable | Required? | Default | Notes |
 |---|---|---|---|
@@ -236,7 +247,9 @@ Queue path persists to Postgres before publishing the RabbitMQ task (transaction
 3. Add the provider field to `NotificationOrchestrator` in `noti-logic/src/orchestrator/mod.rs` and select it by channel in `orchestrator/dispatch.rs`.
 4. Wire the concrete impl in `bin/noti-server/src/startup.rs`.
 
-> SMS / Push / Webhook are currently `MockSmsProvider` / `MockPushProvider` / `MockWebhookProvider` — not yet implemented. Email uses `SmtpProvider` when `SMTP_HOST` is set, else `MockEmailProvider`.
+> **Email**: `SmtpProvider` (lettre) when `SMTP_HOST` set, else `MockEmailProvider`.
+> **Webhook**: real `WebhookProvider` (`providers/webhook.rs`) — `reqwest` HTTP POST to user-supplied `recipient` URL, SSRF-guarded (http/https only, redirects disabled, target pinned to a resolved public-unicast IP to defeat DNS rebinding; `with_block_private(false)` for trusted internal/test stubs). Wired in `startup.rs`.
+> **SMS / Push**: still `MockSmsProvider` / `MockPushProvider` (local capture sink) — not yet implemented.
 
 ---
 

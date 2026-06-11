@@ -62,6 +62,11 @@ jobs:
         with:
           workspaces: coresystem/gridtokenx-noti-service
 
+      - name: Install sqlx-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli
+
       - name: Build
         working-directory: coresystem/gridtokenx-noti-service
         run: cargo build --workspace --all-targets

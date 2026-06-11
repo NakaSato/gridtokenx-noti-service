@@ -1,0 +1,7 @@
+Settlement processed
+--------------------
+Role: {{ role }}
+Status: {{ status }}
+Transaction: {{ tx_signature }}
+Amount: {{ amount }}
+Price: {{ price }}

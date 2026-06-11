@@ -1,18 +1,7 @@
-//! Telemetry initialization (structured logging + metrics).
+//! Telemetry for the notification service.
+//!
+//! Thin re-export of the shared [`gridtokenx_telemetry`] crate so existing
+//! `telemetry::init_telemetry(...)` call sites keep resolving after the
+//! per-service copies were unified.
 
-use tracing_subscriber::{EnvFilter, fmt};
-
-/// Initialize the tracing subscriber with JSON output and env-based filtering.
-pub fn init_telemetry(service_name: &str) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .with_thread_ids(true)
-        .json()
-        .flatten_event(true)
-        .init();
-
-    tracing::info!(service = service_name, "📡 Telemetry initialized");
-}
+pub use gridtokenx_telemetry::{init_telemetry, shutdown_telemetry, TelemetryGuard};

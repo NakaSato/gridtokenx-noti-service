@@ -1,3 +1,7 @@
-New Renewable Energy Certificate (ERC) Issued!
-Amount: {{ amount }} grTHB
-Success! Your contribution to the green grid has been recorded.
+Renewable Energy Certificate Issued
+-----------------------------------
+Your contribution to the green grid has been recorded.
+
+Amount: {{ amount }} MWh
+
+This certificate is verifiable on the Solana blockchain.

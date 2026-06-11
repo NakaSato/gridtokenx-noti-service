@@ -1,0 +1,15 @@
+Hello{% if name %} {{ name }}{% endif %},
+
+A Solana wallet is being linked to your GridTokenX account. Confirm that
+this wallet is yours and we'll register the link on-chain:
+
+Wallet: {{ wallet_address }}
+
+{{ confirmation_url }}
+
+This link expires in 30 minutes.
+
+If you didn't request this, ignore this email — the wallet stays unlinked
+and is never registered on-chain.
+
+— The GridTokenX Team
