@@ -74,13 +74,15 @@ impl NotificationProviderTrait for SmtpProvider {
         let is_html =
             content.trim().starts_with("<!DOCTYPE") || content.trim().starts_with("<html");
 
-        // HTML templates carry the subject in their `<title>` (the Tera
-        // `subject` block); plain-text content has none, so both fall back to a
-        // generic subject via the same path.
-        let subject =
-            extract_subject(content).unwrap_or_else(|| "GridTokenX Notification".to_string());
-
         let email = if is_html {
+            // HTML templates carry the subject in their `<title>` (the Tera
+            // `subject` block). Only HTML content is autoescaped, so extracting
+            // the subject here is safe; never parse it out of plain-text
+            // content, whose variables are NOT escaped and could smuggle a
+            // `<title>` into the Subject header.
+            let subject =
+                extract_subject(content).unwrap_or_else(|| "GridTokenX Notification".to_string());
+
             // Extract text fallback from HTML content (simple stripping)
             let text_fallback = html_to_text(content);
             let plain_content_type = ContentType::parse("text/plain; charset=utf-8")
@@ -122,7 +124,7 @@ impl NotificationProviderTrait for SmtpProvider {
                 .to(recipient
                     .parse()
                     .map_err(|e| NotiError::Internal(format!("Invalid recipient email: {e}")))?)
-                .subject(subject)
+                .subject("GridTokenX Notification")
                 .body(content.to_string())
                 .map_err(|e| NotiError::Internal(format!("Failed to build email: {e}")))?
         };
