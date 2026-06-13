@@ -1,30 +1,109 @@
 {% extends "base.html.tera" %}
 
 {% block subject %}Confirm your email to activate your GridTokenX account{% endblock subject %}
-{% block title %}⚡ One Click to Activate{% endblock title %}
-{% block subtitle %}Confirm your email to start trading energy{% endblock subtitle %}
+{% block title %}✉️ Verify Your Email{% endblock title %}
+{% block subtitle %}Confirm your email address to activate your account{% endblock subtitle %}
+
+{% block extra_styles %}
+        .verify-card {
+            margin: 0 0 28px;
+            padding: 28px;
+            background: linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%);
+            border: 1px solid #d1fae5;
+            border-radius: 12px;
+            text-align: center;
+        }
+        .verify-card .badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 56px;
+            height: 56px;
+            margin: 0 0 16px;
+            background-color: #d1fae5;
+            color: #059669;
+            border-radius: 50%;
+            font-size: 28px;
+        }
+        .verify-card p {
+            margin: 0 0 20px;
+            font-size: 15px;
+            color: #2d3748;
+        }
+        .btn-lg {
+            padding: 16px 40px;
+            font-size: 17px;
+        }
+        .steps {
+            list-style: none;
+            counter-reset: step;
+            padding: 0;
+            margin: 0 0 24px;
+        }
+        .steps li {
+            position: relative;
+            padding: 6px 0 6px 40px;
+            font-size: 15px;
+            color: #4a5568;
+        }
+        .steps li::before {
+            counter-increment: step;
+            content: counter(step);
+            position: absolute;
+            left: 0;
+            top: 4px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 26px;
+            height: 26px;
+            background-color: #059669;
+            color: #ffffff;
+            border-radius: 50%;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        .note-box {
+            margin: 8px 0 0;
+            padding: 14px 16px;
+            background-color: #fffbeb;
+            border-left: 4px solid #f59e0b;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #92400e;
+        }
+{% endblock extra_styles %}
 
 {% block content %}
                 <p>Hello{% if name %} <strong>{{ name }}</strong>{% endif %},</p>
                 <p>
                     Thanks for signing up for <strong>GridTokenX</strong> — the peer-to-peer
-                    energy trading platform. Your account is almost ready: confirm this email
-                    address to activate it and unlock sign-in, wallet linking, and trading.
+                    energy trading platform. One last step: confirm this email address to
+                    activate your account.
                 </p>
-                <p style="text-align: center; margin: 32px 0;">
-                    <a href="{{ verification_url }}" class="btn">✓ Verify My Email</a>
-                </p>
-                <p class="muted" style="text-align: center;">
-                    One click — you'll be signed in automatically afterwards.
-                </p>
+
+                <div class="verify-card">
+                    <div class="badge">✓</div>
+                    <p>Click below to verify your email. You'll be signed in automatically.</p>
+                    <a href="{{ verification_url }}" class="btn btn-lg">Verify My Email</a>
+                </div>
+
+                <p style="font-size: 15px; color: #2d3748; font-weight: 600;">What happens next:</p>
+                <ol class="steps">
+                    <li>Your account is activated instantly.</li>
+                    <li>Link your Solana wallet for transactions.</li>
+                    <li>Start trading renewable energy tokens (GRX).</li>
+                </ol>
+
                 <div class="divider"></div>
                 <p class="muted">
                     If the button doesn't work, copy and paste this link into your browser:
                 </p>
                 <div class="link-fallback"><a href="{{ verification_url }}" style="color: #059669; text-decoration: none;">{{ verification_url }}</a></div>
-                <p class="muted" style="margin-top: 24px;">
-                    You're receiving this because this address was used to register a GridTokenX
-                    account. If that wasn't you, ignore this email — the account stays inactive
-                    and no one can sign in with it.
-                </p>
+
+                <div class="note-box">
+                    You're receiving this because this address was used to register a
+                    GridTokenX account. If that wasn't you, ignore this email — the account
+                    stays inactive and no one can sign in with it.
+                </div>
 {% endblock content %}

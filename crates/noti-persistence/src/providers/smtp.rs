@@ -74,6 +74,12 @@ impl NotificationProviderTrait for SmtpProvider {
         let is_html =
             content.trim().starts_with("<!DOCTYPE") || content.trim().starts_with("<html");
 
+        // HTML templates carry the subject in their `<title>` (the Tera
+        // `subject` block); plain-text content has none, so both fall back to a
+        // generic subject via the same path.
+        let subject =
+            extract_subject(content).unwrap_or_else(|| "GridTokenX Notification".to_string());
+
         let email = if is_html {
             // Extract text fallback from HTML content (simple stripping)
             let text_fallback = html_to_text(content);
@@ -91,7 +97,7 @@ impl NotificationProviderTrait for SmtpProvider {
                 .to(recipient
                     .parse()
                     .map_err(|e| NotiError::Internal(format!("Invalid recipient email: {e}")))?)
-                .subject("GridTokenX Notification")
+                .subject(subject)
                 .multipart(
                     MultiPart::alternative()
                         .singlepart(
@@ -116,7 +122,7 @@ impl NotificationProviderTrait for SmtpProvider {
                 .to(recipient
                     .parse()
                     .map_err(|e| NotiError::Internal(format!("Invalid recipient email: {e}")))?)
-                .subject("GridTokenX Notification")
+                .subject(subject)
                 .body(content.to_string())
                 .map_err(|e| NotiError::Internal(format!("Failed to build email: {e}")))?
         };
@@ -158,14 +164,7 @@ fn html_to_text(html: &str) -> String {
     // Remove all HTML tags
     let text = RE_TAGS.replace_all(&text, "");
 
-    // Decode HTML entities
-    let text = text
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ");
+    let text = decode_entities(&text);
 
     // Clean up whitespace
     text.lines()
@@ -173,4 +172,30 @@ fn html_to_text(html: &str) -> String {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Decode the HTML entities Tera's autoescaper (and common markup) emits.
+/// `&amp;` is decoded last so `&amp;lt;` doesn't double-decode.
+fn decode_entities(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&#x2F;", "/")
+        .replace("&#x2f;", "/")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+}
+
+/// Pull the email subject from the rendered HTML's `<title>` element
+/// (templates set it via the Tera `subject` block in `base.html.tera`).
+fn extract_subject(html: &str) -> Option<String> {
+    static RE_TITLE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?si)<title[^>]*>(.*?)</title>").expect("valid regex")
+    });
+
+    let raw = RE_TITLE.captures(html)?.get(1)?.as_str();
+    let subject = decode_entities(raw).split_whitespace().collect::<Vec<_>>().join(" ");
+    (!subject.is_empty()).then_some(subject)
 }

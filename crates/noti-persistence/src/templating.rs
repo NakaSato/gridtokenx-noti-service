@@ -106,6 +106,22 @@ mod tests {
                 .render(name, vars)
                 .unwrap_or_else(|err| panic!("render '{name}' failed: {err}"));
             assert!(!out.trim().is_empty(), "template '{name}' rendered empty");
+
+            // SmtpProvider derives the email subject from the `<title>` element
+            // (the Tera `subject` block). An HTML template that forgets
+            // `{% block subject %}` inherits base.html.tera's "GridTokenX"
+            // default and silently ships a generic subject — fail here instead.
+            if name.ends_with(".html.tera") {
+                let title = out
+                    .split_once("<title>")
+                    .and_then(|(_, rest)| rest.split_once("</title>"))
+                    .map(|(t, _)| t.trim())
+                    .unwrap_or_else(|| panic!("template '{name}' has no <title>"));
+                assert_ne!(
+                    title, "GridTokenX",
+                    "template '{name}' missing `{{% block subject %}}` (got base default title)"
+                );
+            }
         }
     }
 }
