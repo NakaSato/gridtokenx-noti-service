@@ -30,3 +30,7 @@ gridtokenx-blockchain-core.workspace = true
 tower = { workspace = true }
 # Build sample Notification domain values (timestamp fields) in handler tests.
 chrono = { workspace = true }
+# WebSocket e2e: bind a real listener (`net`) and drive a real client handshake.
+tokio = { workspace = true, features = ["net"] }
+tokio-tungstenite = "0.29"
+futures = { workspace = true }
