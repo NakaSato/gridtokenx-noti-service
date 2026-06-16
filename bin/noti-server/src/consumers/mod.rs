@@ -92,14 +92,8 @@ pub async fn start_kafka_consumer(
     health: Arc<KafkaConsumerHealth>,
     token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let mut backoff = INITIAL_BACKOFF;
-
-    loop {
-        if token.is_cancelled() {
-            break;
-        }
-
-        match run_kafka_session(
+    supervise(&health, &token, || {
+        run_kafka_session(
             &brokers,
             &group_id,
             &topics,
@@ -108,8 +102,32 @@ pub async fn start_kafka_consumer(
             &health,
             &token,
         )
-        .await
-        {
+    })
+    .await;
+    Ok(())
+}
+
+/// Supervise an async session: run it, and on a session error flip health down
+/// and rebuild after a bounded backoff. Exits when the session returns `Ok`
+/// (graceful shutdown) or the token is cancelled — including mid-backoff. The
+/// session factory is injected so the supervision policy (backoff, cancel
+/// handling, health signalling) is unit-testable without a real broker.
+async fn supervise<F, Fut>(
+    health: &Arc<KafkaConsumerHealth>,
+    token: &CancellationToken,
+    mut run_session: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let mut backoff = INITIAL_BACKOFF;
+
+    loop {
+        if token.is_cancelled() {
+            break;
+        }
+
+        match run_session().await {
             Ok(()) => break, // graceful shutdown via the cancellation token
             Err(e) => {
                 health.mark_down();
@@ -118,14 +136,18 @@ pub async fn start_kafka_consumer(
                     () = token.cancelled() => break,
                     () = tokio::time::sleep(backoff) => {}
                 }
-                backoff = (backoff * 2).min(MAX_BACKOFF);
+                backoff = next_backoff(backoff);
             }
         }
     }
 
     health.mark_down();
     info!("🛑 Kafka consumer stopped");
-    Ok(())
+}
+
+/// Double the backoff, capped at `MAX_BACKOFF`.
+fn next_backoff(current: Duration) -> Duration {
+    (current * 2).min(MAX_BACKOFF)
 }
 
 /// One consumer session: build + subscribe, then poll until the token fires
@@ -345,4 +367,146 @@ pub async fn start_rabbitmq_consumer(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for the supervised Kafka consumer (gap #2). The
+    //! supervisor logic is exercised through a fake session so reconnect,
+    //! backoff bounds, cancellation, and health signalling are verified
+    //! without a real broker. Stems from the 2026-06 ~13h consumer wedge.
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use rdkafka::error::KafkaError;
+    use rdkafka::types::RDKafkaErrorCode;
+    use tokio_util::sync::CancellationToken;
+
+    use noti_core::health::KafkaConsumerHealth;
+
+    use super::{INITIAL_BACKOFF, MAX_BACKOFF, is_fatal_kafka_error, next_backoff, supervise};
+
+    // --- fatal-error classification (the wedge signal) ---------------------
+
+    #[test]
+    fn all_brokers_down_is_fatal() {
+        let e = KafkaError::MessageConsumption(RDKafkaErrorCode::AllBrokersDown);
+        assert!(is_fatal_kafka_error(&e));
+    }
+
+    #[test]
+    fn transient_consumption_errors_are_not_fatal() {
+        // A not-yet-created topic and a transient transport blip must NOT tear
+        // the session down — librdkafka auto-recovers; tearing down would cause
+        // a restart storm.
+        for code in [
+            RDKafkaErrorCode::UnknownTopicOrPartition,
+            RDKafkaErrorCode::BrokerTransportFailure,
+            RDKafkaErrorCode::OperationTimedOut,
+        ] {
+            let e = KafkaError::MessageConsumption(code);
+            assert!(!is_fatal_kafka_error(&e), "{code:?} must be non-fatal");
+        }
+    }
+
+    #[test]
+    fn non_consumption_errors_are_not_fatal() {
+        let e = KafkaError::Subscription("bad topic".to_string());
+        assert!(!is_fatal_kafka_error(&e));
+    }
+
+    // --- backoff bounds ----------------------------------------------------
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        let mut b = INITIAL_BACKOFF;
+        assert_eq!(b, Duration::from_secs(1));
+        let expected = [2, 4, 8, 16, 30, 30, 30];
+        for secs in expected {
+            b = next_backoff(b);
+            assert_eq!(b, Duration::from_secs(secs));
+        }
+        assert_eq!(next_backoff(MAX_BACKOFF), MAX_BACKOFF, "saturates at max");
+    }
+
+    // --- supervisor control flow (fake session, paused clock) --------------
+
+    #[tokio::test(start_paused = true)]
+    async fn skips_session_when_cancelled_before_start() {
+        let health = Arc::new(KafkaConsumerHealth::new());
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        supervise(&health, &token, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "pre-cancelled: no session");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ok_session_exits_after_one_run() {
+        let health = Arc::new(KafkaConsumerHealth::new());
+        let token = CancellationToken::new();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        supervise(&health, &token, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "graceful Ok breaks loop");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn errored_session_retries_until_cancelled_and_marks_down() {
+        let health = Arc::new(KafkaConsumerHealth::new());
+        // Start "ready" so we can prove a session error flips readiness off.
+        health.mark_progress(1_000);
+        assert!(health.is_ready(1_000, 90));
+
+        let token = CancellationToken::new();
+        let stop_at = 3;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let tok = token.clone();
+        supervise(&health, &token, || {
+            let c = c.clone();
+            let tok = tok.clone();
+            async move {
+                let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+                // Cancel from inside the session on the Nth failure so the
+                // supervisor breaks out of its backoff sleep.
+                if n >= stop_at {
+                    tok.cancel();
+                }
+                Err::<(), _>(anyhow::anyhow!("simulated broker down"))
+            }
+        })
+        .await;
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            stop_at,
+            "retries each failure until cancellation lands"
+        );
+        assert!(
+            !health.is_ready(1_000, 90),
+            "session error must flip health to not-ready"
+        );
+    }
 }
