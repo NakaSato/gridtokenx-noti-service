@@ -28,3 +28,5 @@ gridtokenx-blockchain-core.workspace = true
 [dev-dependencies]
 # Drive the Axum router in-process (ServiceExt::oneshot) for handler wiring tests.
 tower = { workspace = true }
+# Build sample Notification domain values (timestamp fields) in handler tests.
+chrono = { workspace = true }
