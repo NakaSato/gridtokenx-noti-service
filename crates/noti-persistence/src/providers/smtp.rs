@@ -71,8 +71,7 @@ impl NotificationProviderTrait for SmtpProvider {
         info!("📧 Sending SMTP email to {}", recipient);
 
         // Parse content to detect if it's HTML or multipart
-        let is_html =
-            content.trim().starts_with("<!DOCTYPE") || content.trim().starts_with("<html");
+        let is_html = looks_like_html(content);
 
         let email = if is_html {
             // HTML templates carry the subject in their `<title>` (the Tera
@@ -190,6 +189,17 @@ fn decode_entities(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// Whether `content` should be treated as an HTML email body.
+///
+/// Security-relevant: only HTML content (whose variables Tera autoescapes) is
+/// ever parsed for a Subject via [`extract_subject`]. Plain-text content is
+/// classified `false` here so its unescaped variables can never be parsed into
+/// the Subject header. See the `<title>`-injection note in `send`.
+fn looks_like_html(content: &str) -> bool {
+    let trimmed = content.trim();
+    trimmed.starts_with("<!DOCTYPE") || trimmed.starts_with("<html")
+}
+
 /// Pull the email subject from the rendered HTML's `<title>` element
 /// (templates set it via the Tera `subject` block in `base.html.tera`).
 fn extract_subject(html: &str) -> Option<String> {
@@ -200,4 +210,86 @@ fn extract_subject(html: &str) -> Option<String> {
     let raw = RE_TITLE.captures(html)?.get(1)?.as_str();
     let subject = decode_entities(raw).split_whitespace().collect::<Vec<_>>().join(" ");
     (!subject.is_empty()).then_some(subject)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for the SMTP Subject-header injection fix
+    //! (commits 58b5f44 / 684b3e0). Two mechanisms are guarded:
+    //!   1. `looks_like_html` — only HTML content is ever parsed for a subject,
+    //!      so plain-text (unescaped) variables can't smuggle a `<title>` into
+    //!      the Subject header.
+    //!   2. `extract_subject` — collapses ALL whitespace (incl. CR/LF), so a
+    //!      crafted `<title>` cannot inject extra headers via newlines.
+
+    use super::{extract_subject, looks_like_html};
+
+    // --- Mechanism 1: plain text is never treated as HTML ------------------
+
+    #[test]
+    fn plain_text_with_title_is_not_html() {
+        // A plain-text template whose (unescaped) variable injected a <title>
+        // must NOT be classified as HTML — otherwise its `<title>` would be
+        // lifted into the Subject header.
+        let content = "Your verification code is <title>spoofed subject</title> 123456";
+        assert!(!looks_like_html(content));
+    }
+
+    #[test]
+    fn plain_text_with_crlf_header_injection_is_not_html() {
+        // Classic CRLF header-injection payload arriving via a plain-text body.
+        let content = "Verify: 123\r\nBcc: attacker@evil.example\r\nSubject: spoofed";
+        assert!(!looks_like_html(content));
+    }
+
+    #[test]
+    fn html_doctype_is_detected() {
+        assert!(looks_like_html(
+            "<!DOCTYPE html><html><head><title>Welcome</title></head></html>"
+        ));
+    }
+
+    #[test]
+    fn html_tag_with_leading_whitespace_is_detected() {
+        assert!(looks_like_html("   \n<html><title>Welcome</title></html>"));
+    }
+
+    // --- Mechanism 2: extracted subject can't carry injected headers -------
+
+    #[test]
+    fn extract_subject_collapses_crlf_injection() {
+        // Even from trusted (autoescaped) HTML, a newline in the title must be
+        // collapsed so it can never split the Subject into extra headers.
+        let html = "<html><title>Welcome\r\nBcc: attacker@evil.example</title></html>";
+        let subject = extract_subject(html).expect("title present");
+        assert!(
+            !subject.contains('\r') && !subject.contains('\n'),
+            "subject must not contain CR/LF: {subject:?}"
+        );
+        assert_eq!(subject, "Welcome Bcc: attacker@evil.example");
+    }
+
+    #[test]
+    fn extract_subject_collapses_tabs_and_runs_of_whitespace() {
+        let html = "<html><title>Order\t\t  Matched\n\n  Now</title></html>";
+        assert_eq!(extract_subject(html).expect("title present"), "Order Matched Now");
+    }
+
+    #[test]
+    fn extract_subject_decodes_entities() {
+        let html = "<html><title>Tom &amp; Jerry &lt;3</title></html>";
+        assert_eq!(extract_subject(html).expect("title present"), "Tom & Jerry <3");
+    }
+
+    #[test]
+    fn extract_subject_none_when_no_title() {
+        assert!(extract_subject("<html><body>no title here</body></html>").is_none());
+    }
+
+    #[test]
+    fn extract_subject_none_when_title_is_blank() {
+        // Whitespace-only title collapses to empty → None, so the caller falls
+        // back to the fixed default subject rather than an empty header.
+        assert!(extract_subject("<html><title>   \r\n  </title></html>").is_none());
+    }
 }
