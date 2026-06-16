@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -94,7 +93,7 @@ impl NotificationOrchestrator {
                     let delay_ms =
                         u32::from(2u16.saturating_pow(retry_count.unsigned_abs())) * 60 * 1000;
                     let next_retry_at =
-                        Utc::now() + chrono::Duration::milliseconds(i64::from(delay_ms));
+                        gridtokenx_telemetry::time::now() + chrono::Duration::milliseconds(i64::from(delay_ms));
 
                     self.repo.increment_retry(id, next_retry_at).await?;
                     self.repo

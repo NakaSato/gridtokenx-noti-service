@@ -8,6 +8,7 @@ workspace = true
 
 [dependencies]
 noti-core.workspace = true
+gridtokenx-telemetry.workspace = true
 
 tokio.workspace = true
 async-trait.workspace = true

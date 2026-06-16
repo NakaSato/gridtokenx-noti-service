@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use noti_core::domain::NotificationChannel;
@@ -19,7 +19,6 @@ use super::url::{build_callback_url, rewrite_url, urlencode};
 
 /// Kafka message coordinates, used to derive idempotency keys.
 pub struct MsgCtx {
-    pub topic: String,
     pub partition: i32,
     pub offset: i64,
 }
@@ -221,7 +220,12 @@ pub async fn dispatch(
         "MeterOnboarded" => meter_onboarded(orchestrator, ctx, data).await,
         "UserWalletLinked" => user_wallet_linked(orchestrator, ctx, data).await,
         other => {
-            warn!("Unhandled event type: {other}");
+            // Not a notification trigger (e.g. `ApiKeyVerified` on
+            // `iam.audit.events`, which we subscribe to for
+            // `VerificationEmailRequested`). Demoted from warn to debug: these
+            // arrive in the hundreds of thousands and at warn level they buried
+            // real signal and inflated log volume.
+            debug!("Unhandled event type: {other}");
             Ok(())
         }
     }
@@ -241,9 +245,10 @@ async fn email_verified(
         return Ok(());
     }
 
-    let dashboard_url = frontend_url
-        .map(|base| base.trim_end_matches('/').to_string())
-        .unwrap_or_else(|| "https://app.gridtokenx.xyz".to_string());
+    let dashboard_url = frontend_url.map_or_else(
+        || "https://app.gridtokenx.xyz".to_string(),
+        |base| base.trim_end_matches('/').to_string(),
+    );
 
     orchestrator
         .queue_notification(
@@ -715,7 +720,6 @@ mod tests {
 
     fn ctx() -> MsgCtx {
         MsgCtx {
-            topic: "iam.user.events".to_string(),
             partition: 2,
             offset: 99,
         }

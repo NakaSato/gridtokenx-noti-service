@@ -1,16 +1,23 @@
 //! Health check and metrics HTTP handlers.
 
+use std::sync::Arc;
+
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use gridtokenx_blockchain_core::auth::ServiceRole;
+use noti_core::health::{KafkaConsumerHealth, unix_now_secs};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::UserContext;
+
+/// Report the consumer not-ready once progress is older than this. Comfortably
+/// above the consumer's idle heartbeat tick so a quiet topic never trips it.
+const READY_STALE_AFTER_SECS: i64 = 90;
 
 #[allow(clippy::unused_async)]
 pub async fn health_check() -> impl IntoResponse {
@@ -26,6 +33,31 @@ pub async fn health_check() -> impl IntoResponse {
 #[allow(clippy::unused_async)]
 pub async fn health_live() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "alive" })))
+}
+
+/// Readiness probe: reflects background Kafka consumer liveness so a wedged or
+/// disconnected consumer is reported `503`, instead of the process looking
+/// healthy while it silently drops events.
+#[allow(clippy::unused_async)]
+pub async fn health_ready(
+    Extension(health): Extension<Arc<KafkaConsumerHealth>>,
+) -> impl IntoResponse {
+    let now = unix_now_secs();
+    if health.is_ready(now, READY_STALE_AFTER_SECS) {
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "ready", "kafka_consumer": "connected" })),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "not_ready",
+                "kafka_consumer": "down_or_stale",
+                "last_progress_secs_ago": now.saturating_sub(health.last_progress_secs()),
+            })),
+        )
+    }
 }
 
 // =============================================================================

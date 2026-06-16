@@ -1,6 +1,8 @@
 //! URL helpers for rewriting upstream callback links to the configured
 //! frontend base URL.
 
+use std::fmt::Write as _;
+
 /// Construct a URL using the configured frontend base URL.
 /// Returns an empty string if `frontend_url` is not configured.
 pub fn build_callback_url(frontend_url: Option<&str>, path: &str, query: &str) -> String {
@@ -32,7 +34,11 @@ pub fn urlencode(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 out.push(byte as char);
             }
-            _ => out.push_str(&format!("%{byte:02X}")),
+            // Writing to a String is infallible; the Result is intentionally
+            // discarded (clippy::format_push_string — avoids a temp allocation).
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
         }
     }
     out

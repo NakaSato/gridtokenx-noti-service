@@ -12,6 +12,10 @@ async fn main() {
     // 2. Initialize telemetry (tracing + metrics)
     telemetry::init_telemetry("gridtokenx-noti");
 
+    // External NTP server (Cloudflare primary, Google fallback) as primary wall-clock.
+    // Background poller; `telemetry::time::now()` is non-blocking, degrades to OS clock.
+    telemetry::time::init_default();
+
     // 3. Load configuration
     let config = match Config::from_env() {
         Ok(cfg) => cfg,

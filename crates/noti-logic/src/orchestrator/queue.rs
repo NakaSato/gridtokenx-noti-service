@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use tracing::{error, warn};
 use uuid::Uuid;
 
@@ -41,11 +40,11 @@ impl NotificationOrchestrator {
             provider_id: None,
             provider_ref: None,
             retry_count: 0,
-            next_retry_at: Utc::now(),
+            next_retry_at: gridtokenx_telemetry::time::now(),
             error_message: None,
             idempotency_key: idempotency_key.clone(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: gridtokenx_telemetry::time::now(),
+            updated_at: gridtokenx_telemetry::time::now(),
             sent_at: None,
             read_at: None,
         };

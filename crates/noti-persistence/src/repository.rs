@@ -233,7 +233,7 @@ impl NotificationRepositoryTrait for NotificationRepository {
         provider_ref: Option<String>,
     ) -> Result<()> {
         let sent_at = if status == NotificationStatus::Sent {
-            Some(Utc::now())
+            Some(gridtokenx_telemetry::time::now())
         } else {
             None
         };

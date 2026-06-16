@@ -19,7 +19,6 @@ use noti_core::traits::{
 };
 use noti_logic::NotificationOrchestrator;
 use noti_persistence::cache::CacheService;
-use noti_persistence::messaging::kafka;
 use noti_persistence::messaging::rabbitmq::RabbitMQClient;
 use noti_persistence::providers::smtp::SmtpProvider;
 use noti_persistence::providers::webhook::WebhookProvider;
@@ -176,19 +175,36 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     // -----------------------------------------------------------------------
 
     // a) Kafka Consumer (for IAM events)
-    if !config.kafka_brokers.is_empty() {
-        let kafka_consumer = kafka::create_consumer(&config.kafka_brokers, "noti-service-group")?;
+    let kafka_health = Arc::new(noti_core::health::KafkaConsumerHealth::new());
+    if config.kafka_brokers.is_empty() {
+        // No brokers configured: the consumer never runs, so readiness must not
+        // claim a live consumer it doesn't have — mark it disabled (ready OK).
+        kafka_health.mark_disabled();
+    } else {
+        let brokers = config.kafka_brokers.clone();
         let topics = vec![
             config.kafka_topic_user_events.clone(),
+            // Carries `VerificationEmailRequested` — IAM routes it via its
+            // catch-all topic arm (event_bus/kafka.rs). Do NOT drop this
+            // subscription or verification emails stop arriving.
             config.kafka_topic_audit_events.clone(),
             config.kafka_topic_trading_triggers.clone(),
         ];
         let orch = orchestrator.clone();
         let frontend_url = config.frontend_url.clone();
+        let health_for_consumer = kafka_health.clone();
         let t = token.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                consumers::start_kafka_consumer(kafka_consumer, topics, orch, frontend_url, t).await
+            if let Err(e) = consumers::start_kafka_consumer(
+                brokers,
+                "noti-service-group".to_string(),
+                topics,
+                orch,
+                frontend_url,
+                health_for_consumer,
+                t,
+            )
+            .await
             {
                 error!("Kafka consumer failed: {}", e);
             }
@@ -262,6 +278,11 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
             "/health/live",
             axum::routing::get(noti_api::handlers::health_live),
         )
+        .route(
+            "/health/ready",
+            axum::routing::get(noti_api::handlers::health_ready),
+        )
+        .layer(axum::Extension(kafka_health.clone()))
         .layer(axum::Extension(ws_manager))
         .layer(axum::Extension(noti_api::websocket::JwtSecret(
             config.jwt_secret.clone(),

@@ -79,7 +79,7 @@ pub struct Config {
     #[serde(default = "default_kafka_audit_events")]
     pub kafka_topic_audit_events: String,
     /// Trading-service trigger topic (price-alert firings). Matches the trading
-    /// EventBus topic `{KAFKA_TOPIC_PREFIX}.triggers` (default prefix `trading`).
+    /// `EventBus` topic `{KAFKA_TOPIC_PREFIX}.triggers` (default prefix `trading`).
     #[serde(default = "default_kafka_trading_triggers")]
     pub kafka_topic_trading_triggers: String,
 }

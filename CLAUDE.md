@@ -110,3 +110,9 @@ Single proto file at `proto/noti.proto`. Code generation via `buffa-build` + `co
 2. Register in `crates/noti-persistence/src/providers/mod.rs`
 3. Wire into the orchestrator in `bin/noti-server/src/startup.rs`
 4. Map the channel in `noti-logic/src/orchestrator.rs` dispatch logic
+
+## Search Tooling
+
+> **Use `rg` (ripgrep), never `grep`.** When shelling out to search files, run `rg` —
+> it respects `.gitignore`, skips binaries, and is far faster than `grep`/`find -exec grep`.
+> Reserve plain `grep` only for piping non-file streams.
