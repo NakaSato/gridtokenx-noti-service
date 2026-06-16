@@ -14,7 +14,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Runtime SQLx queries only (no compile-time `query!` macros), so no DB
-  # is needed to build or test. Skip any accidental online query checks.
+  # is needed to *build*. Skip any accidental online query checks.
+  # NOTE: the persistence integration tests (tests/pg_repository, redis_cache,
+  # rabbitmq_dlx) self-provision Postgres/Redis/RabbitMQ via testcontainers and
+  # need a Docker daemon at test time — present by default on ubuntu-latest.
   SQLX_OFFLINE: "true"
 
 jobs:

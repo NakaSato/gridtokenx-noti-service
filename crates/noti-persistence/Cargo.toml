@@ -31,3 +31,13 @@ uuid.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 regex.workspace = true
+
+[dev-dependencies]
+# Ephemeral Postgres/Redis/RabbitMQ containers for adapter integration tests.
+# Requires a running Docker/OrbStack daemon; tests panic (not skip) without it.
+testcontainers = "0.24"
+testcontainers-modules = { version = "0.12", features = [
+    "postgres",
+    "redis",
+    "rabbitmq",
+] }
