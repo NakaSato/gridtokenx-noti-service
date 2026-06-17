@@ -330,36 +330,17 @@ pub async fn start_rabbitmq_consumer(
         }
 
         match delivery_res {
-            Ok(delivery) => {
-                let task: NotificationTask = match serde_json::from_slice(&delivery.data) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        error!("Failed to deserialize notification task: {}", e);
-                        delivery.ack(BasicAckOptions::default()).await?;
-                        continue;
-                    }
-                };
-
-                info!("📥 Received task for notification {}", task.notification_id);
-
-                match orchestrator.clone().dispatch(task.notification_id).await {
-                    Ok(()) => {
-                        delivery.ack(BasicAckOptions::default()).await?;
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to dispatch notification {}: {}",
-                            task.notification_id, e
-                        );
-                        delivery
-                            .nack(BasicNackOptions {
-                                requeue: false,
-                                multiple: false,
-                            })
-                            .await?;
-                    }
+            Ok(delivery) => match process_dispatch_payload(&orchestrator, &delivery.data).await {
+                Disposition::Ack => delivery.ack(BasicAckOptions::default()).await?,
+                Disposition::NackToDlx => {
+                    delivery
+                        .nack(BasicNackOptions {
+                            requeue: false,
+                            multiple: false,
+                        })
+                        .await?;
                 }
-            }
+            },
             Err(e) => {
                 error!("RabbitMQ consumer delivery error: {}", e);
             }
@@ -367,6 +348,49 @@ pub async fn start_rabbitmq_consumer(
     }
 
     Ok(())
+}
+
+/// Fate of a consumed `noti.dispatch` delivery once processed.
+#[derive(Debug, PartialEq, Eq)]
+enum Disposition {
+    /// Remove from the queue: delivered, already terminal, or rescheduled for
+    /// retry out-of-band by the orchestrator — and poison payloads that will
+    /// never parse (drop rather than dead-letter them forever).
+    Ack,
+    /// Reject without requeue → routed to the `noti.retry` DLX for TTL-backoff
+    /// redelivery (topology verified in `tests/rabbitmq_dlx.rs`).
+    NackToDlx,
+}
+
+/// Decide the fate of one dispatch payload: deserialize it, run dispatch, and
+/// map the outcome to an ack/nack disposition. Kept free of `lapin` so the
+/// ack/nack policy is unit-testable without a broker.
+async fn process_dispatch_payload(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    data: &[u8],
+) -> Disposition {
+    let task: NotificationTask = match serde_json::from_slice(data) {
+        Ok(t) => t,
+        Err(e) => {
+            // Poison message: re-delivery can't fix a parse failure, so ack to
+            // drop it instead of dead-lettering the same bad bytes forever.
+            error!("Failed to deserialize notification task: {e}");
+            return Disposition::Ack;
+        }
+    };
+
+    info!("📥 Received task for notification {}", task.notification_id);
+
+    match orchestrator.clone().dispatch(task.notification_id).await {
+        Ok(()) => Disposition::Ack,
+        Err(e) => {
+            warn!(
+                "Failed to dispatch notification {}: {}",
+                task.notification_id, e
+            );
+            Disposition::NackToDlx
+        }
+    }
 }
 
 #[cfg(test)]
@@ -637,5 +661,145 @@ mod tests {
             .await
             .expect("missing event_type → 'unknown' → ignored");
         assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    // --- RabbitMQ dispatch ack/nack policy (gap #7) ------------------------
+    //
+    // The lapin ack/nack plumbing + the DLX retry topology are integration-
+    // tested in `tests/rabbitmq_dlx.rs`. These cover the broker-free decision:
+    // which outcome acks (drop from queue) vs nacks (dead-letter for retry).
+
+    use uuid::Uuid;
+
+    use noti_core::domain::NotificationStatus;
+    use noti_core::error::NotiError;
+
+    use super::{Disposition, NotificationTask, process_dispatch_payload};
+
+    fn pending(id: Uuid) -> Notification {
+        let now = gridtokenx_telemetry::time::now();
+        Notification {
+            id,
+            user_id: Some(Uuid::new_v4()),
+            channel: NotificationChannel::Email,
+            status: NotificationStatus::Pending,
+            recipient: "user@example.com".into(),
+            template_id: "welcome.html.tera".into(),
+            variables: serde_json::json!({}),
+            provider_id: None,
+            provider_ref: None,
+            retry_count: 0,
+            next_retry_at: now,
+            error_message: None,
+            idempotency_key: None,
+            created_at: now,
+            updated_at: now,
+            sent_at: None,
+            read_at: None,
+        }
+    }
+
+    /// Orchestrator whose `dispatch(id)` succeeds: the row is found pending,
+    /// the template renders, and the email provider accepts the send.
+    fn orchestrator_dispatch_ok() -> Arc<NotificationOrchestrator> {
+        let mut repo = MockNotificationRepositoryTrait::new();
+        repo.expect_get_by_id()
+            .returning(|id| Ok(Some(pending(id))));
+        repo.expect_update_status()
+            .times(..)
+            .returning(|_, _, _, _| Ok(()));
+
+        let mut template = MockTemplateEngineTrait::new();
+        template.expect_render().returning(|_, _| Ok("body".into()));
+
+        let mut email = MockNotificationProviderTrait::new();
+        email.expect_send().returning(|_, _| Ok("provider-ref".into()));
+        email.expect_provider_id().returning(|| "mock-email");
+
+        Arc::new(NotificationOrchestrator::new(
+            Arc::new(repo),
+            Arc::new(template),
+            Arc::new(email),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockCacheTrait::new()),
+            None,
+        ))
+    }
+
+    /// Orchestrator whose `dispatch(id)` fails: the row is missing, so dispatch
+    /// returns `NotFound` before touching anything else.
+    fn orchestrator_dispatch_err() -> Arc<NotificationOrchestrator> {
+        let mut repo = MockNotificationRepositoryTrait::new();
+        repo.expect_get_by_id().returning(|_| Ok(None));
+
+        Arc::new(NotificationOrchestrator::new(
+            Arc::new(repo),
+            Arc::new(MockTemplateEngineTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockCacheTrait::new()),
+            None,
+        ))
+    }
+
+    fn task_bytes(id: Uuid) -> Vec<u8> {
+        serde_json::to_vec(&NotificationTask {
+            notification_id: id,
+            retry_count: 0,
+        })
+        .expect("serialize task")
+    }
+
+    #[tokio::test]
+    async fn successful_dispatch_acks() {
+        let orch = orchestrator_dispatch_ok();
+        let disposition = process_dispatch_payload(&orch, &task_bytes(Uuid::new_v4())).await;
+        assert_eq!(disposition, Disposition::Ack, "delivered → drop from queue");
+    }
+
+    #[tokio::test]
+    async fn failed_dispatch_nacks_to_dlx() {
+        let orch = orchestrator_dispatch_err();
+        let disposition = process_dispatch_payload(&orch, &task_bytes(Uuid::new_v4())).await;
+        assert_eq!(
+            disposition,
+            Disposition::NackToDlx,
+            "dispatch error → dead-letter for TTL-backoff retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn poison_payload_is_acked_not_dead_lettered() {
+        // A payload that can never parse must be dropped, not dead-lettered in
+        // a loop. dispatch must never run, so any orchestrator works.
+        let orch = orchestrator_dispatch_err();
+        let disposition = process_dispatch_payload(&orch, b"{ not a task }").await;
+        assert_eq!(
+            disposition,
+            Disposition::Ack,
+            "unparseable poison message → ack to drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_not_found_surfaces_as_nack() {
+        // Guard the specific error mapping: NotFound is a dispatch Err and so
+        // dead-letters (the row may yet be written by a lagging producer).
+        let orch = orchestrator_dispatch_err();
+        let missing = Uuid::new_v4();
+        // Sanity: confirm the orchestrator really returns NotFound for the id.
+        let direct = orch.clone().dispatch(missing).await;
+        assert!(
+            matches!(direct, Err(NotiError::NotFound(_))),
+            "precondition: dispatch returns NotFound"
+        );
+        let disposition = process_dispatch_payload(&orch, &task_bytes(missing)).await;
+        assert_eq!(disposition, Disposition::NackToDlx);
     }
 }
