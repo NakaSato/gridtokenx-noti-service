@@ -929,6 +929,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settlement_processed_notifies_each_party_with_status() {
+        let (orch, sink) = test_orchestrator();
+        let buyer = Uuid::new_v4();
+        let seller = Uuid::new_v4();
+        let data = serde_json::json!({
+            "status": "confirmed",
+            "tx_signature": "sig-abc",
+            "buyer_id": buyer.to_string(),
+            "seller_id": seller.to_string(),
+            "amount": 50,
+            "price": 3
+        });
+
+        dispatch(&orch, None, &ctx(), "SettlementProcessed", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 2, "buyer + seller");
+        assert!(queued.iter().all(|n| matches!(n.channel, NotificationChannel::WebSocket)));
+        assert!(queued.iter().all(|n| n.template_id == "settlement_processed.txt.tera"));
+        let buyer_n = queued
+            .iter()
+            .find(|n| n.user_id == Some(buyer))
+            .expect("buyer notified");
+        assert_eq!(buyer_n.variables["role"], "buyer");
+        assert_eq!(buyer_n.variables["status"], "confirmed");
+        assert_eq!(buyer_n.variables["tx_signature"], "sig-abc");
+    }
+
+    #[tokio::test]
+    async fn settlement_processed_skips_parties_without_uuid() {
+        let (orch, sink) = test_orchestrator();
+        // Only the buyer carries a UUID; seller omitted entirely.
+        let buyer = Uuid::new_v4();
+        let data = serde_json::json!({
+            "status": "",
+            "tx_signature": "sig-xyz",
+            "buyer_id": buyer.to_string()
+        });
+
+        dispatch(&orch, None, &ctx(), "SettlementProcessed", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1, "only the buyer is notified");
+        // Empty upstream status falls back to "unknown".
+        assert_eq!(queued[0].variables["status"], "unknown");
+    }
+
+    #[tokio::test]
+    async fn erc_issued_falls_back_to_recipient_email() {
+        let (orch, sink) = test_orchestrator();
+        // `email` absent → handler uses `recipient_email`.
+        let data = serde_json::json!({
+            "recipient_email": "rec@example.com",
+            "energy_amount": 1234
+        });
+
+        dispatch(&orch, None, &ctx(), "ErcIssued", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1);
+        let n = &queued[0];
+        assert!(matches!(n.channel, NotificationChannel::Email));
+        assert_eq!(n.recipient, "rec@example.com");
+        assert_eq!(n.template_id, "erc_issued.html.tera");
+        assert_eq!(n.variables["amount"], 1234);
+    }
+
+    #[tokio::test]
+    async fn erc_issued_skips_when_no_recipient() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "energy_amount": 1 });
+
+        dispatch(&orch, None, &ctx(), "ErcIssued", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn vpp_dispatched_prefers_admin_recipient() {
+        let (orch, sink) = test_orchestrator();
+        let admin = Uuid::new_v4();
+        let user = Uuid::new_v4();
+        let data = serde_json::json!({
+            "cluster_id": "cluster-7",
+            "target_kw": 250.5,
+            "members_commanded": 12,
+            "admin_user_id": admin.to_string(),
+            "user_id": user.to_string()
+        });
+
+        dispatch(&orch, None, &ctx(), "VppDispatched", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1);
+        let n = &queued[0];
+        assert_eq!(n.user_id, Some(admin), "admin_user_id wins over user_id");
+        assert!(matches!(n.channel, NotificationChannel::WebSocket));
+        assert_eq!(n.template_id, "vpp_dispatched.txt.tera");
+        assert_eq!(n.variables["cluster_id"], "cluster-7");
+        assert_eq!(n.variables["members_count"], 12);
+    }
+
+    #[tokio::test]
+    async fn user_wallet_linked_sends_security_alert() {
+        let (orch, sink) = test_orchestrator();
+        let owner = Uuid::new_v4();
+        let data = serde_json::json!({
+            "user_id": owner.to_string(),
+            "wallet_address": "Wallet111",
+            "shard_id": 3,
+            "transaction_signature": "sig-link"
+        });
+
+        dispatch(&orch, None, &ctx(), "UserWalletLinked", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1);
+        let n = &queued[0];
+        assert_eq!(n.user_id, Some(owner));
+        assert!(matches!(n.channel, NotificationChannel::WebSocket));
+        assert_eq!(n.template_id, "security_alert.txt.tera");
+        assert_eq!(n.variables["wallet_address"], "Wallet111");
+    }
+
+    #[tokio::test]
+    async fn meter_onboarded_skips_without_user_uuid() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "meter_id": "m-1", "meter_type": "smart" });
+
+        dispatch(&orch, None, &ctx(), "MeterOnboarded", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
     async fn unknown_event_type_is_ignored() {
         let (orch, sink) = test_orchestrator();
         let data = serde_json::json!({ "whatever": true });

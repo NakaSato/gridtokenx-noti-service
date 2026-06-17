@@ -509,4 +509,133 @@ mod tests {
             "session error must flip health to not-ready"
         );
     }
+
+    // --- envelope decoding (handle_record, the JSON → dispatch glue) -------
+    //
+    // The per-event field mapping is covered in `events::tests`. These cover
+    // the layer above it: unwrapping the Kafka record envelope (event_type +
+    // data extraction, missing/garbage payload handling) and threading the
+    // record's partition/offset into the idempotency key.
+
+    use std::sync::Mutex;
+
+    use noti_core::domain::{Notification, NotificationChannel};
+    use noti_core::traits::{
+        MockCacheTrait, MockMessageQueueTrait, MockNotificationProviderTrait,
+        MockNotificationRepositoryTrait, MockTemplateEngineTrait,
+    };
+    use noti_logic::NotificationOrchestrator;
+
+    use super::{OwnedRecord, handle_record};
+
+    type Sink = Arc<Mutex<Vec<Notification>>>;
+
+    /// Orchestrator whose `repo.create` records every queued notification.
+    fn recording_orchestrator() -> (Arc<NotificationOrchestrator>, Sink) {
+        let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+        let recorder = sink.clone();
+
+        let mut repo = MockNotificationRepositoryTrait::new();
+        repo.expect_create().times(..).returning(move |n| {
+            recorder.lock().expect("sink lock").push(n.clone());
+            Ok(n.clone())
+        });
+
+        let mut cache = MockCacheTrait::new();
+        cache.expect_set_value().times(..).returning(|_, _, _| Ok(()));
+
+        let mut mq = MockMessageQueueTrait::new();
+        mq.expect_publish_dispatch().times(..).returning(|_| Ok(()));
+
+        let orch = Arc::new(NotificationOrchestrator::new(
+            Arc::new(repo),
+            Arc::new(MockTemplateEngineTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(MockNotificationProviderTrait::new()),
+            Arc::new(cache),
+            Some(Arc::new(mq)),
+        ));
+        (orch, sink)
+    }
+
+    fn record(payload: Option<&str>) -> OwnedRecord {
+        OwnedRecord {
+            payload: payload.map(str::to_string),
+            topic: "iam.user.events".to_string(),
+            partition: 4,
+            offset: 77,
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_record_unwraps_envelope_and_routes_to_handler() {
+        let (orch, sink) = recording_orchestrator();
+        let payload = serde_json::json!({
+            "event_type": "EmailVerified",
+            "data": { "email": "alice@example.com", "username": "alice" }
+        })
+        .to_string();
+
+        handle_record(&orch, Some("https://app.gridtokenx.test"), &record(Some(&payload)))
+            .await
+            .expect("handle_record ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1, "envelope routed to EmailVerified handler");
+        let n = &queued[0];
+        assert!(matches!(n.channel, NotificationChannel::Email));
+        assert_eq!(n.recipient, "alice@example.com");
+        assert_eq!(
+            n.idempotency_key.as_deref(),
+            Some("kafka:email_verified:4:77"),
+            "record partition/offset thread into the idempotency key"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_record_errors_on_malformed_json() {
+        let (orch, sink) = recording_orchestrator();
+        // Surfacing the error (not silently acking) lets the worker log it
+        // and skip the offset commit, so the message isn't lost.
+        handle_record(&orch, None, &record(Some("{not valid json")))
+            .await
+            .expect_err("malformed payload must surface as an error");
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_record_ignores_empty_payload() {
+        let (orch, sink) = recording_orchestrator();
+        handle_record(&orch, None, &record(None))
+            .await
+            .expect("empty payload is a no-op, not an error");
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_record_defaults_missing_data_to_empty_object() {
+        // No `data` field → handler receives an empty object → its field
+        // defaults apply (empty email) → graceful no-op, no panic, no error.
+        let (orch, sink) = recording_orchestrator();
+        let payload = serde_json::json!({ "event_type": "EmailVerified" }).to_string();
+
+        handle_record(&orch, None, &record(Some(&payload)))
+            .await
+            .expect("missing data must not error");
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn handle_record_treats_missing_event_type_as_unknown() {
+        let (orch, sink) = recording_orchestrator();
+        let payload = serde_json::json!({ "data": { "email": "x@example.com" } }).to_string();
+
+        handle_record(&orch, None, &record(Some(&payload)))
+            .await
+            .expect("missing event_type → 'unknown' → ignored");
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
 }
