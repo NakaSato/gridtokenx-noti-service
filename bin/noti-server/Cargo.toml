@@ -47,3 +47,7 @@ uuid.workspace = true
 [dev-dependencies]
 noti-core = { workspace = true, features = ["mocks"] }
 mockall.workspace = true
+# Live Kafka ingest e2e: ephemeral broker + a real rdkafka producer feeding
+# the production consumer. Requires a Docker/OrbStack daemon (panics without).
+testcontainers = "0.24"
+testcontainers-modules = { version = "0.12", features = ["kafka"] }
