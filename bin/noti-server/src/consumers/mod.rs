@@ -324,10 +324,18 @@ pub async fn start_rabbitmq_consumer(
 
     info!("🚀 RabbitMQ consumer started");
 
-    while let Some(delivery_res) = consumer.next().await {
-        if token.is_cancelled() {
-            break;
-        }
+    loop {
+        // Select on the token alongside the next delivery so cancellation takes
+        // effect immediately even while the consumer is idle — without this the
+        // task parks in `consumer.next()` and only notices shutdown when the
+        // next message happens to arrive.
+        let delivery_res = tokio::select! {
+            () = token.cancelled() => break,
+            next = consumer.next() => match next {
+                Some(d) => d,
+                None => break, // consumer stream closed
+            },
+        };
 
         match delivery_res {
             Ok(delivery) => match process_dispatch_payload(&orchestrator, &delivery.data).await {
@@ -347,6 +355,7 @@ pub async fn start_rabbitmq_consumer(
         }
     }
 
+    info!("🛑 RabbitMQ consumer stopped");
     Ok(())
 }
 

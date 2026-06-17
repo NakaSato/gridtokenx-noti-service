@@ -10,10 +10,9 @@
 //!
 //! Requires a Docker/OrbStack daemon — panics (does not skip) without one.
 //!
-//! NOTE: `start_rabbitmq_consumer` only re-checks its cancellation token when a
-//! delivery arrives (it parks in `consumer.next()` while idle), so the test
-//! aborts the consumer task rather than awaiting a graceful stop. The idle-stop
-//! gap is a separate follow-up, not in scope here.
+//! Also asserts graceful shutdown: cancelling the token makes the (idle)
+//! consumer return promptly, since the loop selects on the token alongside the
+//! next delivery rather than parking in `consumer.next()`.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(clippy::duration_suboptimal_units)]
@@ -158,9 +157,12 @@ async fn consumer_dispatches_published_tasks_and_survives_a_failure() {
     client.publish_dispatch(ok_id).await.expect("publish ok task");
     wait_for(&seen, ok_id).await;
 
-    // start_rabbitmq_consumer parks in consumer.next() while idle, so cancel
-    // can't unblock it without another delivery — abort instead of awaiting.
+    // Graceful shutdown: cancelling the token must unblock the idle consumer
+    // promptly (it selects on the token, doesn't park in consumer.next()).
     token.cancel();
-    consumer.abort();
-    let _ = consumer.await;
+    let stopped = tokio::time::timeout(Duration::from_secs(5), consumer).await;
+    assert!(
+        matches!(stopped, Ok(Ok(Ok(())))),
+        "consumer did not stop gracefully on cancel: {stopped:?}"
+    );
 }
