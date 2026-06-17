@@ -44,13 +44,6 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 
-# HTTP/3 & QUIC
-quinn.workspace = true
-h3.workspace = true
-h3-quinn.workspace = true
-rustls.workspace = true
-rustls-pemfile.workspace = true
-
 [dev-dependencies]
 noti-core = { workspace = true, features = ["mocks"] }
 mockall.workspace = true

@@ -63,9 +63,10 @@ bin/noti-server → noti-api → noti-logic → noti-core
 
 ### Dual Server
 
-The service runs two servers concurrently:
+The service runs two servers concurrently (both plain-TCP `axum::serve`, see
+`bin/noti-server/src/startup.rs`):
 - **HTTP/REST** on `PORT` (default 8080) — Axum with health, notification CRUD, WebSocket upgrade
-- **gRPC + HTTP/3** on `PORT + 10` (default 8090) — ConnectRPC over TCP/HTTP2 and QUIC/HTTP3 via `quinn` + `h3`
+- **gRPC / ConnectRPC** on `PORT + 10` (default 8090) — ConnectRPC over HTTP/2 (TCP)
 
 ## Configuration
 
@@ -81,7 +82,6 @@ Environment-driven (loaded via `dotenvy` + `config` crate). Key variables:
 | `JWT_SECRET` | required | WebSocket auth |
 | `SMTP_HOST` | optional | If empty → mock email provider |
 | `SMTP_TLS_MODE` | `starttls` | `starttls`, `tls`, or `none` |
-| `CERT_FILE` / `KEY_FILE` | `infra/certs/*` | TLS certs for HTTP/3 QUIC |
 
 ## Lint Rules
 
