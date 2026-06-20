@@ -34,3 +34,6 @@ chrono = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tokio-tungstenite = "0.29"
 futures = { workspace = true }
+# WebSocket full-flow e2e (tests/websocket_flow.rs): drive a notification through
+# the real orchestrator → real `WebSocketProvider` → `ConnectionManager` → client.
+noti-persistence = { workspace = true }

@@ -7,6 +7,7 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use gridtokenx_blockchain_core::auth::ServiceRole;
+use noti_core::domain::DevicePlatform;
 use noti_core::health::{KafkaConsumerHealth, unix_now_secs};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -152,4 +153,101 @@ pub async fn mark_all_notifications_as_read(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(json!({ "success": true })))
+}
+
+// =============================================================================
+// Push Device-Token Registration (Push / FCM channel)
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterDeviceRequest {
+    pub token: String,
+    /// One of `android`, `ios`, `web`.
+    pub platform: String,
+}
+
+/// Register (or reactivate) a push device token for the authenticated user.
+///
+/// The mobile/web client calls this on first launch and whenever FCM rotates
+/// its token.
+///
+/// # Errors
+///
+/// Returns `400` for an unknown platform, `401` if unauthorized, `500` if the
+/// registry write fails.
+pub async fn register_device(
+    role: ServiceRole,
+    user: UserContext,
+    State(state): State<AppState>,
+    Json(req): Json<RegisterDeviceRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
+        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+
+    let platform = DevicePlatform::from_db(&req.platform.to_lowercase()).ok_or((
+        StatusCode::BAD_REQUEST,
+        "platform must be one of: android, ios, web".to_string(),
+    ))?;
+
+    if req.token.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "token must not be empty".to_string()));
+    }
+
+    let device = state
+        .device_repo
+        .register(user.user_id, &req.token, platform)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(json!({ "success": true, "device_id": device.id })))
+}
+
+/// Revoke a push device token (logout / unregister).
+///
+/// # Errors
+///
+/// Returns `401` if unauthorized, `500` if the registry write fails.
+pub async fn revoke_device(
+    role: ServiceRole,
+    _user: UserContext,
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
+        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+
+    state
+        .device_repo
+        .revoke(&token)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(json!({ "success": true })))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListDevicesResponse {
+    pub devices: Vec<noti_core::domain::DeviceToken>,
+}
+
+/// List the authenticated user's active push device tokens.
+///
+/// # Errors
+///
+/// Returns `401` if unauthorized, `500` if the registry read fails.
+pub async fn list_devices(
+    role: ServiceRole,
+    user: UserContext,
+    State(state): State<AppState>,
+) -> Result<Json<ListDevicesResponse>, (StatusCode, String)> {
+    role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
+        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+
+    let devices = state
+        .device_repo
+        .active_for_user(user.user_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(ListDevicesResponse { devices }))
 }

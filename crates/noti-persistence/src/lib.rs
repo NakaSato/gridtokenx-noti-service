@@ -5,6 +5,7 @@
 //! notification providers, and template engine.
 
 pub mod cache;
+pub mod device_tokens;
 pub mod messaging;
 pub mod providers;
 pub mod repository;

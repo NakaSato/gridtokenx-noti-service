@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::domain::{Notification, NotificationStatus};
+use crate::domain::{DevicePlatform, DeviceToken, Notification, NotificationStatus};
 use crate::error::Result;
 
 // ---------------------------------------------------------------------------
@@ -45,6 +45,33 @@ pub trait NotificationRepositoryTrait: Send + Sync {
     async fn mark_as_read(&self, id: Uuid, user_id: Uuid) -> Result<()>;
     async fn mark_all_as_read(&self, user_id: Uuid) -> Result<()>;
     async fn get_unread_count(&self, user_id: Uuid) -> Result<i64>;
+}
+
+// ---------------------------------------------------------------------------
+// Device Token Registry
+// ---------------------------------------------------------------------------
+
+/// Persistent registry of push device tokens (mobile + web) per user.
+///
+/// Backs the Push channel fan-out: a single `user_id` recipient expands to all
+/// of that user's currently-active tokens. Delivery results that report an
+/// invalid/unregistered token feed back into [`revoke`](Self::revoke), making
+/// the registry self-healing.
+#[cfg_attr(feature = "mocks", mockall::automock)]
+#[async_trait]
+pub trait DeviceTokenRepositoryTrait: Send + Sync {
+    /// Upsert a token for a user. Re-registering a previously revoked token
+    /// reactivates it and refreshes `last_seen_at`.
+    async fn register(
+        &self,
+        user_id: Uuid,
+        token: &str,
+        platform: DevicePlatform,
+    ) -> Result<DeviceToken>;
+    /// All non-revoked tokens for a user.
+    async fn active_for_user(&self, user_id: Uuid) -> Result<Vec<DeviceToken>>;
+    /// Mark a token revoked (soft delete). Idempotent.
+    async fn revoke(&self, token: &str) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------

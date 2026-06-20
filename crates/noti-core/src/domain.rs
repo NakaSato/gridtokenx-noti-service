@@ -25,6 +25,49 @@ pub enum NotificationStatus {
     PermanentFailure,
 }
 
+/// Platform a push device token targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DevicePlatform {
+    Android,
+    Ios,
+    Web,
+}
+
+impl DevicePlatform {
+    /// Lowercase wire/storage representation.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Android => "android",
+            Self::Ios => "ios",
+            Self::Web => "web",
+        }
+    }
+
+    /// Parse from the lowercase storage representation.
+    #[must_use]
+    pub fn from_db(s: &str) -> Option<Self> {
+        match s {
+            "android" => Some(Self::Android),
+            "ios" => Some(Self::Ios),
+            "web" => Some(Self::Web),
+            _ => None,
+        }
+    }
+}
+
+/// A registered push device token for a user (mobile or web).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceToken {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub token: String,
+    pub platform: DevicePlatform,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
 /// A persisted notification record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
