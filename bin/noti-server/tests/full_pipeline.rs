@@ -60,7 +60,10 @@ use testcontainers_modules::kafka::apache;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use testcontainers_modules::testcontainers::ImageExt;
+
+mod common;
+use common::{kafka_brokers, pg_url, rabbit_url, redis_url};
 
 const TOPIC: &str = "iam.user.events";
 
@@ -83,32 +86,6 @@ impl NotificationProviderTrait for CapturingEmailProvider {
     fn provider_id(&self) -> &'static str {
         "capturing-email"
     }
-}
-
-async fn pg_url(c: &ContainerAsync<Postgres>) -> String {
-    let host = c.get_host().await.expect("pg host");
-    let port = c.get_host_port_ipv4(5432).await.expect("pg port");
-    format!("postgres://postgres:postgres@{host}:{port}/postgres")
-}
-
-async fn redis_url(c: &ContainerAsync<Redis>) -> String {
-    let host = c.get_host().await.expect("redis host");
-    let port = c.get_host_port_ipv4(6379).await.expect("redis port");
-    format!("redis://{host}:{port}")
-}
-
-async fn rabbit_url(c: &ContainerAsync<testcontainers_modules::rabbitmq::RabbitMq>) -> String {
-    let host = c.get_host().await.expect("rabbit host");
-    let port = c.get_host_port_ipv4(5672).await.expect("rabbit port");
-    format!("amqp://{host}:{port}/%2f")
-}
-
-async fn kafka_brokers(c: &ContainerAsync<apache::Kafka>) -> String {
-    let port = c
-        .get_host_port_ipv4(apache::KAFKA_PORT)
-        .await
-        .expect("kafka port");
-    format!("127.0.0.1:{port}")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -47,7 +47,10 @@ use noti_server::consumers::start_rabbitmq_consumer;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use testcontainers_modules::testcontainers::ImageExt;
+
+mod common;
+use common::{pg_url, rabbit_url, redis_url};
 use tokio_util::sync::CancellationToken;
 
 /// Email provider that records every `(recipient, content)` it is asked to send,
@@ -71,23 +74,6 @@ impl NotificationProviderTrait for CapturingEmailProvider {
     }
 }
 
-async fn pg_url(c: &ContainerAsync<Postgres>) -> String {
-    let host = c.get_host().await.expect("pg host");
-    let port = c.get_host_port_ipv4(5432).await.expect("pg port");
-    format!("postgres://postgres:postgres@{host}:{port}/postgres")
-}
-
-async fn redis_url(c: &ContainerAsync<Redis>) -> String {
-    let host = c.get_host().await.expect("redis host");
-    let port = c.get_host_port_ipv4(6379).await.expect("redis port");
-    format!("redis://{host}:{port}")
-}
-
-async fn rabbit_url(c: &ContainerAsync<testcontainers_modules::rabbitmq::RabbitMq>) -> String {
-    let host = c.get_host().await.expect("rabbit host");
-    let port = c.get_host_port_ipv4(5672).await.expect("rabbit port");
-    format!("amqp://{host}:{port}/%2f")
-}
 
 /// A minimal `Email` notification, `Pending`, due now.
 fn sample(id: Uuid) -> Notification {

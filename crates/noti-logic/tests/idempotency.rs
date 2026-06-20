@@ -25,6 +25,8 @@ use noti_core::traits::{
 };
 use noti_logic::NotificationOrchestrator;
 
+mod common;
+
 /// Assemble an orchestrator from a pre-configured repo, cache, and MQ. Providers
 /// and template are bare mocks — `queue_notification` touches none of them.
 fn orchestrator(
@@ -48,26 +50,7 @@ fn orchestrator(
 /// An already-persisted row carrying a *fixed* id — what `repo.create` returns
 /// when the incoming `idempotency_key` conflicts with an existing notification.
 fn existing_row(id: Uuid) -> Notification {
-    let now = gridtokenx_telemetry::time::now();
-    Notification {
-        id,
-        user_id: None,
-        channel: NotificationChannel::Email,
-        status: NotificationStatus::Pending,
-        recipient: "user@example.com".to_string(),
-        template_id: "welcome.html.tera".to_string(),
-        variables: serde_json::json!({}),
-        provider_id: None,
-        provider_ref: None,
-        retry_count: 0,
-        next_retry_at: now,
-        error_message: None,
-        idempotency_key: Some("dup-key".to_string()),
-        created_at: now,
-        updated_at: now,
-        sent_at: None,
-        read_at: None,
-    }
+    common::notification(id, NotificationChannel::Email, NotificationStatus::Pending, 0)
 }
 
 /// Fresh key → genuine insert (`create` echoes the row's id) → orchestrator

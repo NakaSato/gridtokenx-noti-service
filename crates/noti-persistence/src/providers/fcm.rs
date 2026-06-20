@@ -34,6 +34,10 @@ use noti_core::error::{NotiError, Result};
 use noti_core::traits::{DeviceTokenRepositoryTrait, NotificationProviderTrait};
 
 const FCM_SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
+/// Base origin of the FCM HTTP v1 API. Overridable per-provider (see
+/// [`FcmProvider::with_messaging_base_url`]) only so tests can point sends at a
+/// local stub; production always uses this.
+const FCM_BASE_URL: &str = "https://fcm.googleapis.com";
 const TOKEN_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 /// Refresh the cached access token this many seconds before its stated expiry.
@@ -93,6 +97,8 @@ pub struct FcmProvider {
     client: reqwest::Client,
     token_cache: Mutex<Option<CachedToken>>,
     device_repo: Arc<dyn DeviceTokenRepositoryTrait>,
+    /// Origin for `messages:send` requests. Defaults to [`FCM_BASE_URL`].
+    messaging_base_url: String,
 }
 
 impl FcmProvider {
@@ -128,7 +134,18 @@ impl FcmProvider {
             client,
             token_cache: Mutex::new(None),
             device_repo,
+            messaging_base_url: FCM_BASE_URL.to_string(),
         })
+    }
+
+    /// Override the FCM messaging origin (default [`FCM_BASE_URL`]).
+    ///
+    /// Exists so integration tests can redirect `messages:send` at a local stub
+    /// server; production code never calls this.
+    #[must_use]
+    pub fn with_messaging_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.messaging_base_url = base_url.into();
+        self
     }
 
     /// Verify the service-account credentials are usable by minting (and
@@ -216,8 +233,8 @@ impl FcmProvider {
         payload: &PushPayload,
     ) -> std::result::Result<(), SendError> {
         let url = format!(
-            "https://fcm.googleapis.com/v1/projects/{}/messages:send",
-            self.project_id
+            "{}/v1/projects/{}/messages:send",
+            self.messaging_base_url, self.project_id
         );
         let message = build_message(device, payload);
 

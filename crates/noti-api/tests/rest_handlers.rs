@@ -28,15 +28,14 @@ use noti_api::handlers::{
 use noti_api::AppState;
 use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
 use noti_core::error::{NotiError, Result};
-use noti_core::traits::{
-    CacheTrait, DeviceTokenRepositoryTrait, MessageQueueTrait, NotificationProviderTrait,
-    NotificationRepositoryTrait, TemplateEngineTrait,
-};
+use noti_core::traits::{NotificationProviderTrait, NotificationRepositoryTrait};
 use noti_logic::NotificationOrchestrator;
 use uuid::Uuid;
 
-const ROLE_HEADER: &str = "x-gridtokenx-role";
-const USER_HEADER: &str = "x-gridtokenx-user-id";
+mod common;
+use common::{
+    ROLE_HEADER, StubCache, StubDeviceRepo, StubMq, StubProvider, StubTemplate, USER_HEADER,
+};
 
 // --- Fakes -----------------------------------------------------------------
 
@@ -134,88 +133,6 @@ impl NotificationRepositoryTrait for FakeRepo {
     }
 }
 
-struct StubCache;
-#[async_trait::async_trait]
-impl CacheTrait for StubCache {
-    async fn set_value(&self, _k: &str, _v: serde_json::Value, _t: u64) -> Result<()> {
-        Ok(())
-    }
-    async fn get_value(&self, _k: &str) -> Result<Option<serde_json::Value>> {
-        Ok(None)
-    }
-    async fn increment_with_ttl(&self, _k: &str, _t: u64) -> Result<i64> {
-        Ok(1)
-    }
-    async fn delete(&self, _k: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn lock(&self, _k: &str, _t: u64) -> Result<bool> {
-        Ok(true)
-    }
-    async fn unlock(&self, _k: &str) -> Result<()> {
-        Ok(())
-    }
-}
-
-struct StubTemplate;
-impl TemplateEngineTrait for StubTemplate {
-    fn render(&self, _i: &str, _v: &serde_json::Value) -> Result<String> {
-        Ok("body".into())
-    }
-}
-
-struct StubProvider;
-#[async_trait::async_trait]
-impl NotificationProviderTrait for StubProvider {
-    async fn send(&self, _r: &str, _b: &str) -> Result<String> {
-        Ok("ref".into())
-    }
-    fn provider_id(&self) -> &'static str {
-        "stub"
-    }
-}
-
-struct StubMq;
-#[async_trait::async_trait]
-impl MessageQueueTrait for StubMq {
-    async fn publish_dispatch(&self, _id: Uuid) -> Result<()> {
-        Ok(())
-    }
-    async fn publish_retry(&self, _id: Uuid, _d: u32) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// Device-registry stub: the REST notification tests never touch device routes,
-/// so every method is a no-op.
-struct StubDeviceRepo;
-#[async_trait::async_trait]
-impl DeviceTokenRepositoryTrait for StubDeviceRepo {
-    async fn register(
-        &self,
-        user_id: Uuid,
-        token: &str,
-        platform: noti_core::domain::DevicePlatform,
-    ) -> Result<noti_core::domain::DeviceToken> {
-        Ok(noti_core::domain::DeviceToken {
-            id: Uuid::new_v4(),
-            user_id,
-            token: token.to_string(),
-            platform,
-            created_at: Utc::now(),
-            last_seen_at: Utc::now(),
-        })
-    }
-    async fn active_for_user(
-        &self,
-        _user_id: Uuid,
-    ) -> Result<Vec<noti_core::domain::DeviceToken>> {
-        Ok(vec![])
-    }
-    async fn revoke(&self, _token: &str) -> Result<()> {
-        Ok(())
-    }
-}
 
 // --- Harness ---------------------------------------------------------------
 

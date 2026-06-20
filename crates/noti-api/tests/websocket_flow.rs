@@ -43,6 +43,9 @@ use noti_core::traits::{
 use noti_logic::NotificationOrchestrator;
 use noti_persistence::providers::websocket::WebSocketProvider;
 
+mod common;
+use common::{StubCache, StubProvider};
+
 const SECRET: &str = "test-ws-flow-secret-please-ignore";
 /// Readiness sentinel pushed until the client's connection is registered. Exactly
 /// one such frame lands on the socket and is drained before the real assertion.
@@ -123,47 +126,12 @@ impl NotificationRepositoryTrait for OneShotRepo {
     }
 }
 
-struct StubCache;
-#[async_trait]
-impl CacheTrait for StubCache {
-    async fn set_value(&self, _k: &str, _v: serde_json::Value, _t: u64) -> Result<()> {
-        Ok(())
-    }
-    async fn get_value(&self, _k: &str) -> Result<Option<serde_json::Value>> {
-        Ok(None)
-    }
-    async fn increment_with_ttl(&self, _k: &str, _t: u64) -> Result<i64> {
-        Ok(1)
-    }
-    async fn delete(&self, _k: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn lock(&self, _k: &str, _t: u64) -> Result<bool> {
-        Ok(true)
-    }
-    async fn unlock(&self, _k: &str) -> Result<()> {
-        Ok(())
-    }
-}
-
 /// Returns a fixed, distinctive body — keeps the test about the WS delivery path
 /// (real-template rendering is covered by `full_pipeline.rs` / template tests).
 struct StubTemplate;
 impl TemplateEngineTrait for StubTemplate {
     fn render(&self, _i: &str, _v: &serde_json::Value) -> Result<String> {
         Ok(RENDERED_BODY.to_string())
-    }
-}
-
-/// Stub for the non-WebSocket channels the orchestrator constructor still needs.
-struct StubProvider;
-#[async_trait]
-impl NotificationProviderTrait for StubProvider {
-    async fn send(&self, _r: &str, _b: &str) -> Result<String> {
-        Ok("ref".into())
-    }
-    fn provider_id(&self) -> &'static str {
-        "stub"
     }
 }
 

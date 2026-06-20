@@ -7,7 +7,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
 use uuid::Uuid;
 
 use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
@@ -18,36 +17,12 @@ use noti_core::traits::{
 };
 use noti_logic::NotificationOrchestrator;
 
+mod common;
+use common::{notification, ok_template};
+
 /// Build an Email-channel notification with the given status and retry count.
 fn email_notification(id: Uuid, status: NotificationStatus, retry_count: i32) -> Notification {
-    Notification {
-        id,
-        user_id: None,
-        channel: NotificationChannel::Email,
-        status,
-        recipient: "user@example.com".to_string(),
-        template_id: "welcome.html.tera".to_string(),
-        variables: serde_json::json!({}),
-        provider_id: None,
-        provider_ref: None,
-        retry_count,
-        next_retry_at: Utc::now(),
-        error_message: None,
-        idempotency_key: None,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        sent_at: None,
-        read_at: None,
-    }
-}
-
-/// Template mock that always renders a fixed body.
-fn ok_template() -> MockTemplateEngineTrait {
-    let mut tmpl = MockTemplateEngineTrait::new();
-    tmpl.expect_render()
-        .times(..)
-        .returning(|_, _| Ok("body".to_string()));
-    tmpl
+    notification(id, NotificationChannel::Email, status, retry_count)
 }
 
 /// Assemble an orchestrator with the given email provider, repo, template, and

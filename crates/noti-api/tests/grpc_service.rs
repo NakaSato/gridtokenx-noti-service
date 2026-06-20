@@ -29,16 +29,16 @@ use serde::Serialize;
 use noti_api::grpc::NotificationGrpcService;
 use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
 use noti_core::error::{NotiError, Result};
-use noti_core::traits::{
-    CacheTrait, MessageQueueTrait, NotificationProviderTrait, NotificationRepositoryTrait,
-    TemplateEngineTrait,
-};
+use noti_core::traits::{NotificationProviderTrait, NotificationRepositoryTrait};
 use noti_logic::NotificationOrchestrator;
 use noti_protocol::noti::{
     Channel, GetNotificationStatusRequest, GetNotificationStatusRequestView, NotificationService,
     SendNotificationRequest, SendNotificationRequestView,
 };
 use uuid::Uuid;
+
+mod common;
+use common::{StubCache, StubMq, StubProvider, StubTemplate};
 
 // --- Fakes -----------------------------------------------------------------
 
@@ -115,58 +115,6 @@ impl NotificationRepositoryTrait for RecordingRepo {
     }
     async fn get_unread_count(&self, _user: Uuid) -> Result<i64> {
         Ok(0)
-    }
-}
-
-struct StubCache;
-#[async_trait::async_trait]
-impl CacheTrait for StubCache {
-    async fn set_value(&self, _k: &str, _v: serde_json::Value, _t: u64) -> Result<()> {
-        Ok(())
-    }
-    async fn get_value(&self, _k: &str) -> Result<Option<serde_json::Value>> {
-        Ok(None)
-    }
-    async fn increment_with_ttl(&self, _k: &str, _t: u64) -> Result<i64> {
-        Ok(1)
-    }
-    async fn delete(&self, _k: &str) -> Result<()> {
-        Ok(())
-    }
-    async fn lock(&self, _k: &str, _t: u64) -> Result<bool> {
-        Ok(true)
-    }
-    async fn unlock(&self, _k: &str) -> Result<()> {
-        Ok(())
-    }
-}
-
-struct StubTemplate;
-impl TemplateEngineTrait for StubTemplate {
-    fn render(&self, _i: &str, _v: &serde_json::Value) -> Result<String> {
-        Ok("body".into())
-    }
-}
-
-struct StubProvider;
-#[async_trait::async_trait]
-impl NotificationProviderTrait for StubProvider {
-    async fn send(&self, _r: &str, _b: &str) -> Result<String> {
-        Ok("ref".into())
-    }
-    fn provider_id(&self) -> &'static str {
-        "stub"
-    }
-}
-
-struct StubMq;
-#[async_trait::async_trait]
-impl MessageQueueTrait for StubMq {
-    async fn publish_dispatch(&self, _id: Uuid) -> Result<()> {
-        Ok(())
-    }
-    async fn publish_retry(&self, _id: Uuid, _d: u32) -> Result<()> {
-        Ok(())
     }
 }
 
