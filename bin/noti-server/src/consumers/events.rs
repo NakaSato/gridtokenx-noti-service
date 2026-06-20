@@ -28,6 +28,40 @@ fn parse_uuid(s: Option<&str>) -> Option<Uuid> {
     s.and_then(|v| Uuid::parse_str(v).ok())
 }
 
+/// Render a JSON value as a bare display string for embedding in human text:
+/// strings drop their quotes, everything else uses its compact JSON form.
+/// (Upstream encodes amounts/prices as either a number or a string.)
+fn plain(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), ToString::to_string)
+}
+
+/// Queue an FCM push to all of a user's registered devices. The recipient is
+/// the `user_id` (`FcmProvider` fans out to its device tokens); the shared
+/// `push_notification.txt.tera` template renders the `{title, body}` JSON
+/// envelope `FcmProvider` parses, so the human text is built by the caller.
+async fn queue_push(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    uid: Uuid,
+    title: &str,
+    body: String,
+    idempotency_key: String,
+) -> anyhow::Result<()> {
+    orchestrator
+        .queue_notification(
+            Some(uid),
+            NotificationChannel::Push,
+            uid.to_string(),
+            "push_notification.txt.tera".to_string(),
+            serde_json::json!({ "title": title, "body": body }),
+            Some(idempotency_key),
+        )
+        .await
+        .map(|_| ())
+        .map_err(into_anyhow)
+}
+
 /// Map an orchestrator error into `anyhow`.
 fn into_anyhow(e: noti_core::error::NotiError) -> anyhow::Error {
     anyhow::anyhow!(e)
@@ -192,6 +226,12 @@ fn parse<T: for<'de> Deserialize<'de>>(event_type: &str, data: Value) -> Option<
 // ---------------------------------------------------------------------------
 
 /// Route a parsed event to its handler. Unknown types are logged and ignored.
+///
+/// # Errors
+///
+/// Returns an error if the matched handler fails to queue its notification
+/// (e.g. the orchestrator's persist/publish step errors). Unknown event types
+/// and skipped payloads return `Ok(())`.
 pub async fn dispatch(
     orchestrator: &Arc<NotificationOrchestrator>,
     frontend_url: Option<&str>,
@@ -277,35 +317,47 @@ async fn order_matched(
         return Ok(());
     };
 
-    if let Some(uid) = parse_uuid(p.buyer_id.as_deref()) {
-        orchestrator
-            .queue_notification(
-                Some(uid),
-                NotificationChannel::WebSocket,
-                uid.to_string(),
-                "trade_matched.txt.tera".to_string(),
-                serde_json::json!({ "role": "buyer", "amount": p.amount, "price": p.price }),
-                Some(format!("kafka:matched:buy:{}:{}", ctx.partition, ctx.offset)),
-            )
-            .await
-            .map_err(into_anyhow)?;
-    }
+    // Each matched party gets two deliveries: a real-time WebSocket push (seen
+    // when the web app is open) AND an FCM push (mobile/web background). The
+    // Push channel's recipient is the user_id — FcmProvider fans it out to all
+    // of that user's registered device tokens. Distinct idempotency keys keep
+    // the two channels independent under redelivery.
+    for (role, id) in [
+        ("buyer", p.buyer_id.as_deref()),
+        ("seller", p.seller_id.as_deref()),
+    ] {
+        let Some(uid) = parse_uuid(id) else {
+            continue;
+        };
 
-    if let Some(uid) = parse_uuid(p.seller_id.as_deref()) {
         orchestrator
             .queue_notification(
                 Some(uid),
                 NotificationChannel::WebSocket,
                 uid.to_string(),
                 "trade_matched.txt.tera".to_string(),
-                serde_json::json!({ "role": "seller", "amount": p.amount, "price": p.price }),
+                serde_json::json!({ "role": role, "amount": p.amount, "price": p.price }),
                 Some(format!(
-                    "kafka:matched:sell:{}:{}",
+                    "kafka:matched:{role}:ws:{}:{}",
                     ctx.partition, ctx.offset
                 )),
             )
             .await
             .map_err(into_anyhow)?;
+
+        let body = format!(
+            "Your {role} order matched: {} kWh @ {}",
+            plain(&p.amount),
+            plain(&p.price)
+        );
+        queue_push(
+            orchestrator,
+            uid,
+            "Trade Matched",
+            body,
+            format!("kafka:matched:{role}:push:{}:{}", ctx.partition, ctx.offset),
+        )
+        .await?;
     }
 
     Ok(())
@@ -358,6 +410,22 @@ async fn settlement_processed(
             )
             .await
             .map_err(into_anyhow)?;
+
+        queue_push(
+            orchestrator,
+            uid,
+            "Trade Settled",
+            format!(
+                "Your {role} trade settled ({status}): {} kWh @ {}",
+                plain(&p.amount),
+                plain(&p.price)
+            ),
+            format!(
+                "kafka:settlement:{role}:push:{}:{}",
+                ctx.partition, ctx.offset
+            ),
+        )
+        .await?;
     }
 
     Ok(())
@@ -473,6 +541,20 @@ async fn price_alert_triggered(
         )
         .await
         .map_err(into_anyhow)?;
+
+    queue_push(
+        orchestrator,
+        uid,
+        "Price Alert Triggered",
+        format!(
+            "Alert fired ({} {}). Market price: {}",
+            p.condition,
+            plain(&p.target_price),
+            plain(&p.triggered_price)
+        ),
+        format!("kafka:price_alert:push:{}:{}", ctx.partition, ctx.offset),
+    )
+    .await?;
 
     Ok(())
 }
@@ -668,6 +750,17 @@ async fn user_wallet_linked(
         .await
         .map_err(into_anyhow)?;
 
+    // Security-sensitive: also push to mobile/web so the owner sees a wallet
+    // link even when no web session is open.
+    queue_push(
+        orchestrator,
+        uid,
+        "Security Alert: Wallet Linked",
+        format!("A wallet ({}) was linked to your account.", p.wallet_address),
+        format!("kafka:wallet_link:push:{}:{}", ctx.partition, ctx.offset),
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -843,10 +936,30 @@ mod tests {
             .expect("dispatch ok");
 
         let queued = sink.lock().expect("lock");
-        assert_eq!(queued.len(), 2, "buyer + seller");
-        assert!(queued.iter().all(|n| matches!(n.channel, NotificationChannel::WebSocket)));
-        assert!(queued.iter().any(|n| n.user_id == Some(buyer)));
-        assert!(queued.iter().any(|n| n.user_id == Some(seller)));
+        // Each party gets a WebSocket + a Push notification → 4 total.
+        assert_eq!(queued.len(), 4, "buyer + seller, each on WS + Push");
+
+        let ws: Vec<_> = queued
+            .iter()
+            .filter(|n| matches!(n.channel, NotificationChannel::WebSocket))
+            .collect();
+        let push: Vec<_> = queued
+            .iter()
+            .filter(|n| matches!(n.channel, NotificationChannel::Push))
+            .collect();
+        assert_eq!(ws.len(), 2, "one WS per party");
+        assert_eq!(push.len(), 2, "one Push per party");
+
+        // Push recipient is the user_id (FcmProvider fans out to device tokens),
+        // routed through the JSON push template.
+        for n in &push {
+            assert_eq!(n.template_id, "push_notification.txt.tera");
+            assert_eq!(n.recipient, n.user_id.expect("push has user").to_string());
+        }
+        for uid in [buyer, seller] {
+            assert!(ws.iter().any(|n| n.user_id == Some(uid)));
+            assert!(push.iter().any(|n| n.user_id == Some(uid)));
+        }
     }
 
     #[tokio::test]
@@ -878,12 +991,20 @@ mod tests {
             .expect("dispatch ok");
 
         let queued = sink.lock().expect("lock");
-        assert_eq!(queued.len(), 1);
-        let n = &queued[0];
-        assert!(matches!(n.channel, NotificationChannel::WebSocket));
-        assert_eq!(n.user_id, Some(owner));
-        assert_eq!(n.template_id, "price_alert_triggered.txt.tera");
-        assert_eq!(n.variables["condition"], "above");
+        // WebSocket + Push to the owner.
+        assert_eq!(queued.len(), 2, "owner on WS + Push");
+        assert!(queued.iter().all(|n| n.user_id == Some(owner)));
+        let ws = queued
+            .iter()
+            .find(|n| matches!(n.channel, NotificationChannel::WebSocket))
+            .expect("ws present");
+        assert_eq!(ws.template_id, "price_alert_triggered.txt.tera");
+        assert_eq!(ws.variables["condition"], "above");
+        let push = queued
+            .iter()
+            .find(|n| matches!(n.channel, NotificationChannel::Push))
+            .expect("push present");
+        assert_eq!(push.template_id, "push_notification.txt.tera");
     }
 
     #[tokio::test]
@@ -947,10 +1068,21 @@ mod tests {
             .expect("dispatch ok");
 
         let queued = sink.lock().expect("lock");
-        assert_eq!(queued.len(), 2, "buyer + seller");
-        assert!(queued.iter().all(|n| matches!(n.channel, NotificationChannel::WebSocket)));
-        assert!(queued.iter().all(|n| n.template_id == "settlement_processed.txt.tera"));
-        let buyer_n = queued
+        // Each party: WebSocket + Push → 4 total.
+        assert_eq!(queued.len(), 4, "buyer + seller, each on WS + Push");
+        let ws: Vec<_> = queued
+            .iter()
+            .filter(|n| matches!(n.channel, NotificationChannel::WebSocket))
+            .collect();
+        let push: Vec<_> = queued
+            .iter()
+            .filter(|n| matches!(n.channel, NotificationChannel::Push))
+            .collect();
+        assert_eq!(ws.len(), 2);
+        assert_eq!(push.len(), 2);
+        assert!(ws.iter().all(|n| n.template_id == "settlement_processed.txt.tera"));
+        assert!(push.iter().all(|n| n.template_id == "push_notification.txt.tera"));
+        let buyer_n = ws
             .iter()
             .find(|n| n.user_id == Some(buyer))
             .expect("buyer notified");
@@ -975,9 +1107,19 @@ mod tests {
             .expect("dispatch ok");
 
         let queued = sink.lock().expect("lock");
-        assert_eq!(queued.len(), 1, "only the buyer is notified");
+        // Only the buyer is notified, but on both WS + Push.
+        assert_eq!(queued.len(), 2, "buyer only, WS + Push");
+        assert!(queued.iter().all(|n| n.user_id == Some(buyer)));
+        let ws = queued
+            .iter()
+            .find(|n| matches!(n.channel, NotificationChannel::WebSocket))
+            .expect("ws present");
         // Empty upstream status falls back to "unknown".
-        assert_eq!(queued[0].variables["status"], "unknown");
+        assert_eq!(ws.variables["status"], "unknown");
+        assert!(
+            queued.iter().any(|n| matches!(n.channel, NotificationChannel::Push)),
+            "push present"
+        );
     }
 
     #[tokio::test]
@@ -1057,12 +1199,19 @@ mod tests {
             .expect("dispatch ok");
 
         let queued = sink.lock().expect("lock");
-        assert_eq!(queued.len(), 1);
-        let n = &queued[0];
-        assert_eq!(n.user_id, Some(owner));
-        assert!(matches!(n.channel, NotificationChannel::WebSocket));
-        assert_eq!(n.template_id, "security_alert.txt.tera");
-        assert_eq!(n.variables["wallet_address"], "Wallet111");
+        // WebSocket + Push (security-sensitive) to the owner.
+        assert_eq!(queued.len(), 2, "owner on WS + Push");
+        assert!(queued.iter().all(|n| n.user_id == Some(owner)));
+        let ws = queued
+            .iter()
+            .find(|n| matches!(n.channel, NotificationChannel::WebSocket))
+            .expect("ws present");
+        assert_eq!(ws.template_id, "security_alert.txt.tera");
+        assert_eq!(ws.variables["wallet_address"], "Wallet111");
+        assert!(
+            queued.iter().any(|n| matches!(n.channel, NotificationChannel::Push)),
+            "push present"
+        );
     }
 
     #[tokio::test]

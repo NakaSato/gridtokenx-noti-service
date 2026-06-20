@@ -18,10 +18,13 @@
 
 use std::sync::{Arc, Mutex};
 
+use axum::http::{HeaderMap, HeaderValue};
 use buffa::EnumValue;
 use buffa::view::OwnedView;
 use connectrpc::error::ErrorCode;
 use connectrpc::response::RequestContext;
+use jsonwebtoken::{EncodingKey, Header, encode};
+use serde::Serialize;
 
 use noti_api::grpc::NotificationGrpcService;
 use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
@@ -169,6 +172,37 @@ impl MessageQueueTrait for StubMq {
 
 // --- Harness ---------------------------------------------------------------
 
+const JWT_SECRET: &str = "grpc-service-test-secret-please-ignore";
+
+#[derive(Serialize)]
+struct Claims {
+    sub: String,
+    exp: usize,
+}
+
+/// A `RequestContext` carrying a valid `authorization: Bearer <jwt>` header, so
+/// the handlers' auth gate admits the call and the translation-layer assertions
+/// below run. Auth rejection itself is covered by `unauthenticated_context_*`.
+fn authed_ctx() -> RequestContext {
+    let claims = Claims {
+        sub: Uuid::new_v4().to_string(),
+        exp: 9_999_999_999,
+    };
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+    )
+    .expect("encode jwt");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {token}")).expect("header value"),
+    );
+    RequestContext::new(headers)
+}
+
 /// Build the gRPC service around an orchestrator backed by `repo`.
 fn service(repo: Arc<RecordingRepo>) -> NotificationGrpcService {
     let provider: Arc<dyn NotificationProviderTrait> = Arc::new(StubProvider);
@@ -183,7 +217,7 @@ fn service(repo: Arc<RecordingRepo>) -> NotificationGrpcService {
         Arc::new(StubCache),
         Some(Arc::new(StubMq)),
     ));
-    NotificationGrpcService::new(orchestrator)
+    NotificationGrpcService::new(orchestrator, JWT_SECRET.to_string())
 }
 
 /// Round-trip an owned `SendNotificationRequest` into the borrowing view the
@@ -222,6 +256,49 @@ fn sample() -> Notification {
     }
 }
 
+// --- auth gate --------------------------------------------------------------
+
+#[tokio::test]
+async fn unauthenticated_context_is_rejected_for_send() {
+    let repo = Arc::new(RecordingRepo::new());
+    let svc = service(repo.clone());
+
+    let req = SendNotificationRequest {
+        channel: EnumValue::Known(Channel::EMAIL),
+        recipient: "user@example.com".into(),
+        template_id: "welcome".into(),
+        ..Default::default()
+    };
+    // Default context → no authorization header.
+    let err = svc
+        .send_notification(RequestContext::default(), send_view(&req))
+        .await
+        .expect_err("a call with no bearer token must be rejected");
+
+    assert_eq!(err.code, ErrorCode::Unauthenticated);
+    assert!(
+        repo.created.lock().unwrap().is_empty(),
+        "auth gate runs before the orchestrator — nothing persisted"
+    );
+}
+
+#[tokio::test]
+async fn unauthenticated_context_is_rejected_for_status() {
+    let repo = Arc::new(RecordingRepo::with_stored(sample()));
+    let svc = service(repo);
+
+    let req = GetNotificationStatusRequest {
+        notification_id: Uuid::new_v4().to_string(),
+        ..Default::default()
+    };
+    let err = svc
+        .get_notification_status(RequestContext::default(), status_view(&req))
+        .await
+        .expect_err("status read must also require auth");
+
+    assert_eq!(err.code, ErrorCode::Unauthenticated);
+}
+
 // --- send_notification -----------------------------------------------------
 
 #[tokio::test]
@@ -239,7 +316,7 @@ async fn send_notification_queues_and_maps_fields() {
         ..Default::default()
     };
     let resp = svc
-        .send_notification(RequestContext::default(), send_view(&req))
+        .send_notification(authed_ctx(), send_view(&req))
         .await
         .expect("send_notification ok");
 
@@ -273,7 +350,7 @@ async fn send_notification_empty_user_and_key_are_none() {
         template_id: "welcome".into(),
         ..Default::default()
     };
-    svc.send_notification(RequestContext::default(), send_view(&req))
+    svc.send_notification(authed_ctx(), send_view(&req))
         .await
         .expect("send_notification ok");
 
@@ -297,7 +374,7 @@ async fn send_notification_invalid_variables_json_is_invalid_argument() {
         ..Default::default()
     };
     let err = svc
-        .send_notification(RequestContext::default(), send_view(&req))
+        .send_notification(authed_ctx(), send_view(&req))
         .await
         .expect_err("malformed variables_json must be rejected");
 
@@ -318,7 +395,7 @@ async fn send_notification_invalid_user_id_is_invalid_argument() {
         ..Default::default()
     };
     let err = svc
-        .send_notification(RequestContext::default(), send_view(&req))
+        .send_notification(authed_ctx(), send_view(&req))
         .await
         .expect_err("malformed user_id must be rejected");
 
@@ -340,7 +417,7 @@ async fn get_status_returns_stored_notification() {
         ..Default::default()
     };
     let resp = svc
-        .get_notification_status(RequestContext::default(), status_view(&req))
+        .get_notification_status(authed_ctx(), status_view(&req))
         .await
         .expect("get_status ok");
 
@@ -359,7 +436,7 @@ async fn get_status_missing_is_not_found() {
         ..Default::default()
     };
     let err = svc
-        .get_notification_status(RequestContext::default(), status_view(&req))
+        .get_notification_status(authed_ctx(), status_view(&req))
         .await
         .expect_err("absent notification must be not_found");
 
@@ -376,7 +453,7 @@ async fn get_status_invalid_id_is_invalid_argument() {
         ..Default::default()
     };
     let err = svc
-        .get_notification_status(RequestContext::default(), status_view(&req))
+        .get_notification_status(authed_ctx(), status_view(&req))
         .await
         .expect_err("malformed id must be rejected");
 

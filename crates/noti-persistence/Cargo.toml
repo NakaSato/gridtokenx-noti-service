@@ -17,6 +17,7 @@ lapin.workspace = true
 tera.workspace = true
 lettre.workspace = true
 reqwest.workspace = true
+jsonwebtoken.workspace = true
 
 tokio.workspace = true
 tokio-util.workspace = true

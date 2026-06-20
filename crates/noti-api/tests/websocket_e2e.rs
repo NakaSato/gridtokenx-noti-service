@@ -121,6 +121,29 @@ async fn invalid_token_handshake_is_rejected() {
 }
 
 #[tokio::test]
+async fn expired_token_is_rejected() {
+    let (addr, _manager) = spawn_server().await;
+    // Correctly signed with the real secret, but `exp` is in the past — the only
+    // JWT-rejection branch the other tests miss. `Validation::default()` enforces
+    // expiry (with a 60s leeway), so a 2001-era `exp` must fail the handshake;
+    // proves an old/replayed-but-genuine token can't reconnect.
+    let claims = Claims {
+        sub: Uuid::new_v4().to_string(),
+        exp: 1_000_000_000, // 2001-09-09, far past the default leeway
+    };
+    let expired = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(SECRET.as_bytes()),
+    )
+    .expect("encode jwt");
+    let url = format!("ws://{addr}/ws?token={expired}");
+
+    let result = tokio_tungstenite::connect_async(&url).await;
+    assert!(result.is_err(), "expired token must be rejected");
+}
+
+#[tokio::test]
 async fn token_with_wrong_secret_is_rejected() {
     let (addr, _manager) = spawn_server().await;
     // Valid JWT shape, signed with the wrong key → signature check fails.

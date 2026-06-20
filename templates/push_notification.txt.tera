@@ -1,0 +1,1 @@
+{"title": {{ title | json_encode }}, "body": {{ body | json_encode }}}

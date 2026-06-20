@@ -82,6 +82,8 @@ Environment-driven (loaded via `dotenvy` + `config` crate). Key variables:
 | `JWT_SECRET` | required | WebSocket auth |
 | `SMTP_HOST` | optional | If empty → mock email provider |
 | `SMTP_TLS_MODE` | `starttls` | `starttls`, `tls`, or `none` |
+| `FCM_PROJECT_ID` | optional | Firebase project id; real FCM push needs this **and** `FCM_CREDENTIALS_PATH` |
+| `FCM_CREDENTIALS_PATH` | optional | Google service-account JSON path. Both unset → `MockPushProvider` |
 
 ## Lint Rules
 

@@ -29,8 +29,8 @@ use noti_api::AppState;
 use noti_core::domain::{Notification, NotificationChannel, NotificationStatus};
 use noti_core::error::{NotiError, Result};
 use noti_core::traits::{
-    CacheTrait, MessageQueueTrait, NotificationProviderTrait, NotificationRepositoryTrait,
-    TemplateEngineTrait,
+    CacheTrait, DeviceTokenRepositoryTrait, MessageQueueTrait, NotificationProviderTrait,
+    NotificationRepositoryTrait, TemplateEngineTrait,
 };
 use noti_logic::NotificationOrchestrator;
 use uuid::Uuid;
@@ -186,6 +186,37 @@ impl MessageQueueTrait for StubMq {
     }
 }
 
+/// Device-registry stub: the REST notification tests never touch device routes,
+/// so every method is a no-op.
+struct StubDeviceRepo;
+#[async_trait::async_trait]
+impl DeviceTokenRepositoryTrait for StubDeviceRepo {
+    async fn register(
+        &self,
+        user_id: Uuid,
+        token: &str,
+        platform: noti_core::domain::DevicePlatform,
+    ) -> Result<noti_core::domain::DeviceToken> {
+        Ok(noti_core::domain::DeviceToken {
+            id: Uuid::new_v4(),
+            user_id,
+            token: token.to_string(),
+            platform,
+            created_at: Utc::now(),
+            last_seen_at: Utc::now(),
+        })
+    }
+    async fn active_for_user(
+        &self,
+        _user_id: Uuid,
+    ) -> Result<Vec<noti_core::domain::DeviceToken>> {
+        Ok(vec![])
+    }
+    async fn revoke(&self, _token: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
 // --- Harness ---------------------------------------------------------------
 
 /// Build the `/api/v1/noti` router around an orchestrator backed by `repo`.
@@ -203,7 +234,10 @@ fn app(repo: Arc<FakeRepo>) -> Router {
         Arc::new(StubCache),
         Some(Arc::new(StubMq)),
     ));
-    let state = AppState { orchestrator };
+    let state = AppState {
+        orchestrator,
+        device_repo: Arc::new(StubDeviceRepo),
+    };
     Router::new()
         .route("/api/v1/noti/", get(list_notifications))
         .route("/api/v1/noti/{id}", patch(mark_notification_as_read))

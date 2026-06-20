@@ -99,14 +99,17 @@ noti-server     →  noti-core, noti-protocol, noti-persistence, noti-logic, not
 | Event Type | Channel | Template | Variables |
 |:---|:---|:---|:---|
 | `UserRegistered` | Email | `welcome.html.tera` | `name` |
-| `OrderMatched` | WebSocket | `trade_matched.txt.tera` | `role`, `amount`, `price` |
+| `OrderMatched` | WebSocket **+ Push** | `trade_matched.txt.tera` (+ `push_notification.txt.tera`) | `role`, `amount`, `price` |
+| `SettlementProcessed` | WebSocket **+ Push** | `settlement_processed.txt.tera` (+ `push_notification.txt.tera`) | `role`, `status`, `tx_signature`, `amount`, `price` (per party with a UUID) |
+| `PriceAlertTriggered` | WebSocket **+ Push** | `price_alert_triggered.txt.tera` (+ `push_notification.txt.tera`) | `condition`, `target_price`, `triggered_price` |
 | `ErcIssued` | Email | `erc_issued.html.tera` | `amount` |
 | `PasswordResetRequested` | Email | `password_reset.html.tera` | `reset_url` |
 | `VerificationEmailRequested` | Email | `verify_email.html.tera` | `name`, `verification_url` |
 | `UserOnboarded` | WebSocket | `user_onboarded.txt.tera` | `user_account_pda`, `transaction_signature` |
 | `MeterOnboarded` | WebSocket | `meter_onboarded.txt.tera` | `meter_id`, `meter_type`, `transaction_signature` |
-| `UserWalletLinked` | WebSocket | `security_alert.txt.tera` | `wallet_address`, `shard_id`, `transaction_signature` |
-| `SettlementProcessed` | — | *(logged only, no notification dispatched)* | — |
+| `UserWalletLinked` | WebSocket **+ Push** | `security_alert.txt.tera` (+ `push_notification.txt.tera`) | `wallet_address`, `shard_id`, `transaction_signature` |
+
+> **Push channel:** the `WebSocket + Push` events also fan an FCM push out to the user's registered devices. The Push recipient is the `user_id`; `push_notification.txt.tera` renders a `{title, body}` JSON envelope (built in the handler) that `FcmProvider` parses. Independent idempotency keys (`…:push:…`) keep the two channels decoupled under redelivery.
 
 ### URL Rewriting
 
@@ -260,6 +263,8 @@ Environment-driven (loaded via `dotenvy` + `config` crate). Key variables:
 | `JWT_SECRET` | required | WebSocket auth |
 | `SMTP_HOST` | optional | If empty → `MockEmailProvider` |
 | `SMTP_TLS_MODE` | `starttls` | `starttls`, `tls`, or `none` |
+| `FCM_PROJECT_ID` | optional | Firebase project id; real FCM push needs this **and** `FCM_CREDENTIALS_PATH` |
+| `FCM_CREDENTIALS_PATH` | optional | Google service-account JSON path (self-mints OAuth2). Both unset → `MockPushProvider` |
 | `FRONTEND_URL` | optional | Base URL for email callback links |
 | `CERT_FILE` / `KEY_FILE` | `infra/certs/*` | TLS certs for HTTP/3 QUIC |
 
@@ -296,6 +301,7 @@ Tera templates in `templates/`. The `TemplateEngine` loads them at startup via g
 | `password_reset.txt.tera` | Plain text | Email (fallback) |
 | `erc_issued.txt.tera` | Plain text | Email (fallback) |
 | `trade_matched.txt.tera` | Plain text | WebSocket |
+| `push_notification.txt.tera` | JSON `{title, body}` | Push (FCM) — shared by all push events |
 | `user_onboarded.txt.tera` | Plain text | WebSocket |
 | `meter_onboarded.txt.tera` | Plain text | WebSocket |
 | `security_alert.txt.tera` | Plain text | WebSocket |
@@ -314,4 +320,7 @@ Authorization is delegated to `gridtokenx-blockchain-core::auth::ServiceRole` (r
 | `GET` | `/api/v1/notifications` | `list_notifications` (params: `limit`, `offset`) |
 | `PATCH` | `/api/v1/notifications/{id}` | `mark_notification_as_read` |
 | `POST` | `/api/v1/notifications/read-all` | `mark_all_notifications_as_read` |
+| `GET` | `/api/v1/noti/devices` | `list_devices` (user's active push tokens) |
+| `POST` | `/api/v1/noti/devices` | `register_device` (`{token, platform}`) |
+| `DELETE` | `/api/v1/noti/devices/{token}` | `revoke_device` |
 | `GET` | `/ws?token=<jwt>` | WebSocket upgrade |

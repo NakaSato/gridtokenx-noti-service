@@ -14,12 +14,14 @@ use noti_api::grpc::NotificationGrpcService;
 use noti_api::websocket::ConnectionManager;
 use noti_core::config::Config;
 use noti_core::traits::{
-    CacheTrait, MessageQueueTrait, NotificationProviderTrait, NotificationRepositoryTrait,
-    TemplateEngineTrait, WebSocketRegistryTrait,
+    CacheTrait, DeviceTokenRepositoryTrait, MessageQueueTrait, NotificationProviderTrait,
+    NotificationRepositoryTrait, TemplateEngineTrait, WebSocketRegistryTrait,
 };
 use noti_logic::NotificationOrchestrator;
 use noti_persistence::cache::CacheService;
+use noti_persistence::device_tokens::PgDeviceTokenRepository;
 use noti_persistence::messaging::rabbitmq::RabbitMQClient;
+use noti_persistence::providers::fcm::FcmProvider;
 use noti_persistence::providers::smtp::SmtpProvider;
 use noti_persistence::providers::webhook::WebhookProvider;
 use noti_persistence::providers::{MockEmailProvider, MockPushProvider, MockSmsProvider};
@@ -124,6 +126,9 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     ));
     let template_engine = Arc::new(TemplateEngine::new("./templates")?);
 
+    // Push device-token registry (backs the FCM fan-out + registration API).
+    let device_repo = Arc::new(PgDeviceTokenRepository::new(high_priority_pool.clone()));
+
     // Email Provider
     let email_provider: Arc<dyn NotificationProviderTrait> = if let Some(host) = &config.smtp_host {
         Arc::new(SmtpProvider::new(
@@ -142,9 +147,41 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         Arc::new(MockEmailProvider)
     };
 
-    // SMS / Push remain mocks (local capture sink); Webhook is a real HTTP POST.
+    // SMS remains a mock (local capture sink); Webhook is a real HTTP POST.
     let sms_provider = Arc::new(MockSmsProvider);
-    let push_provider = Arc::new(MockPushProvider);
+
+    // Push: real FCM HTTP v1 when a project id + service-account JSON are
+    // configured, else the mock sink (same degradation pattern as SMTP).
+    let push_provider: Arc<dyn NotificationProviderTrait> = if let (Some(project_id), Some(creds_path)) =
+        (&config.fcm_project_id, &config.fcm_credentials_path)
+    {
+        match FcmProvider::from_credentials_file(
+            project_id.clone(),
+            creds_path,
+            device_repo.clone() as Arc<dyn DeviceTokenRepositoryTrait>,
+        ) {
+            Ok(p) => {
+                // Mint a token now so bad credentials surface at boot, not on
+                // the first push. Non-fatal: a transient token-endpoint blip
+                // shouldn't stop the service starting — sends mint/retry later.
+                match p.preflight().await {
+                    Ok(()) => info!("✅ FCM push provider configured + validated (project {project_id})"),
+                    Err(e) => warn!(
+                        "⚠️ FCM provider configured (project {project_id}) but preflight token mint failed ({e}); will retry on send"
+                    ),
+                }
+                Arc::new(p)
+            }
+            Err(e) => {
+                warn!("⚠️ FCM configured but failed to initialize ({e}); using MockPushProvider");
+                Arc::new(MockPushProvider)
+            }
+        }
+    } else {
+        warn!("⚠️ No FCM project/credentials configured, using MockPushProvider");
+        Arc::new(MockPushProvider)
+    };
+
     let webhook_provider = Arc::new(WebhookProvider::new());
 
     let ws_manager = Arc::new(ConnectionManager::new());
@@ -163,7 +200,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         template_engine.clone() as Arc<dyn TemplateEngineTrait>,
         email_provider,
         sms_provider as Arc<dyn NotificationProviderTrait>,
-        push_provider as Arc<dyn NotificationProviderTrait>,
+        push_provider,
         webhook_provider as Arc<dyn NotificationProviderTrait>,
         websocket_provider as Arc<dyn NotificationProviderTrait>,
         cache_service.clone() as Arc<dyn CacheTrait>,
@@ -241,7 +278,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     // 5. API Layer (Axum)
     // -----------------------------------------------------------------------
 
-    let grpc_service = NotificationGrpcService::new(orchestrator.clone());
+    let grpc_service = NotificationGrpcService::new(orchestrator.clone(), config.jwt_secret.clone());
     let mut router = connectrpc::Router::new();
     router = Arc::new(grpc_service).register(router);
 
@@ -249,26 +286,44 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
 
     let state = noti_api::AppState {
         orchestrator: orchestrator.clone(),
+        device_repo: device_repo.clone() as Arc<dyn DeviceTokenRepositoryTrait>,
     };
 
-    let axum_router = grpc_router
-        .nest(
+    // Register the notification REST routes with explicit absolute paths and merge them,
+    // rather than `nest("/api/v1/noti", child-with-"/"-route)`. Nesting a router whose
+    // collection handler sits at the "/" child path leaves `GET /api/v1/noti[/]` shadowed
+    // by the ConnectRPC catch-all (returns `unimplemented`), even though `/{id}` and
+    // `/read-all` resolve. Both slash variants are bound so trailing-slash clients work.
+    let noti_rest = axum::Router::new()
+        .route(
             "/api/v1/noti",
-            axum::Router::new()
-                .route(
-                    "/",
-                    axum::routing::get(noti_api::handlers::list_notifications),
-                )
-                .route(
-                    "/{id}",
-                    axum::routing::patch(noti_api::handlers::mark_notification_as_read),
-                )
-                .route(
-                    "/read-all",
-                    axum::routing::post(noti_api::handlers::mark_all_notifications_as_read),
-                )
-                .with_state(state),
+            axum::routing::get(noti_api::handlers::list_notifications),
         )
+        .route(
+            "/api/v1/noti/",
+            axum::routing::get(noti_api::handlers::list_notifications),
+        )
+        .route(
+            "/api/v1/noti/{id}",
+            axum::routing::patch(noti_api::handlers::mark_notification_as_read),
+        )
+        .route(
+            "/api/v1/noti/read-all",
+            axum::routing::post(noti_api::handlers::mark_all_notifications_as_read),
+        )
+        .route(
+            "/api/v1/noti/devices",
+            axum::routing::get(noti_api::handlers::list_devices)
+                .post(noti_api::handlers::register_device),
+        )
+        .route(
+            "/api/v1/noti/devices/{token}",
+            axum::routing::delete(noti_api::handlers::revoke_device),
+        )
+        .with_state(state);
+
+    let axum_router = grpc_router
+        .merge(noti_rest)
         .route("/ws", axum::routing::get(noti_api::websocket::ws_handler))
         .route(
             "/health",

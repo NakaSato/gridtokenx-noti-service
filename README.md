@@ -61,7 +61,8 @@ graph TD
 
 ## 🚀 Key Features
 
-* **Multi-Channel Dispatcher:** Native handlers for **Email** (SMTP/Lettre with multipart HTML+text), **WebSockets** (real-time push), and **Webhooks** (reqwest HTTP POST). Mock providers for **SMS** and **Push**.
+* **Multi-Channel Dispatcher:** Native handlers for **Email** (SMTP/Lettre with multipart HTML+text), **WebSockets** (real-time push), **Webhooks** (reqwest HTTP POST), and **Push** (FCM HTTP v1 — mobile Android/iOS + web). Mock provider for **SMS**.
+* **FCM Push (mobile + web):** `FcmProvider` delivers via Firebase Cloud Messaging HTTP v1. Self-mints OAuth2 from a service-account JSON (no Google-auth dependency), fans one notification out to all of a user's registered device tokens, and self-heals — dead tokens (`UNREGISTERED`/`INVALID_ARGUMENT`/HTTP 404) are auto-revoked. Falls back to `MockPushProvider` until `FCM_PROJECT_ID` + `FCM_CREDENTIALS_PATH` are both set.
 * **SSRF-Hardened Webhooks:** Webhook delivery enforces http/https only, disables redirects, and pins the connection to a vetted public-unicast IP (blocks loopback/RFC1918/link-local/CGNAT/ULA + v4-mapped) to defeat DNS rebinding. `with_block_private(false)` escape hatch for trusted internal targets.
 * **HTML Email Templates:** Styled HTML templates with green/amber gradient design for welcome, verification, password reset, and ERC issuance emails. Automatic multipart generation (HTML + plain text fallback).
 * **Template Engine:** Dynamically renders email and alert bodies using [Tera](https://tera.netlify.app/) (Jinja2-like templates) with HTML autoescaping.
@@ -89,6 +90,9 @@ The HTTP API serves on `PORT` (default: `8080`). All `/api/v1/` endpoints requir
 | `/api/v1/noti` | `GET` | Header | List notification history (params: `limit`, `offset`) |
 | `/api/v1/noti/{id}` | `PATCH` | Header | Mark a specific notification as read |
 | `/api/v1/noti/read-all` | `POST` | Header | Mark all user notifications as read |
+| `/api/v1/noti/devices` | `GET` | Header | List the user's active push device tokens |
+| `/api/v1/noti/devices` | `POST` | Header | Register/reactivate a device token (`{token, platform}`; platform ∈ `android`,`ios`,`web`) |
+| `/api/v1/noti/devices/{token}` | `DELETE` | Header | Revoke a device token (logout/unregister) |
 | `/ws?token=<jwt>` | `GET` | JWT | Initiate a WebSocket session for real-time push |
 
 ### gRPC / ConnectRPC Service
@@ -120,6 +124,8 @@ The service loads settings from environment variables or YAML configuration file
 | `SMTP_PASS` | *Optional* | SMTP password |
 | `SMTP_FROM` | `no-reply@gridtokenx.com` | Sender email address |
 | `SMTP_TLS_MODE` | `starttls` | `starttls`, `tls` (implicit, port 465), or `none` (Mailpit) |
+| `FCM_PROJECT_ID` | *Optional* | Firebase project id. Real FCM push needs this **and** `FCM_CREDENTIALS_PATH` |
+| `FCM_CREDENTIALS_PATH` | *Optional* | Google service-account JSON path (mints OAuth2). Both unset → `MockPushProvider` |
 | `FRONTEND_URL` | *Optional* | Base URL for email callback links (e.g. `https://trading-ui.example.com/`) |
 | `CERT_FILE` | `infra/certs/server.crt` | TLS certificate for HTTP/3 QUIC |
 | `KEY_FILE` | `infra/certs/server.key` | TLS private key for HTTP/3 QUIC |
@@ -158,12 +164,13 @@ sqlx migrate add <name>
 | Event | Channel | Template | Description |
 |:---|:---|:---|:---|
 | `UserRegistered` | Email | `welcome.html.tera` | Welcome email with feature list |
-| `OrderMatched` | WebSocket | `trade_matched.txt.tera` | Trade match alert to buyer and seller |
-| `SettlementProcessed` | WebSocket | `settlement_processed.txt.tera` | Settlement status to buyer and seller (when party UUIDs present) |
+| `OrderMatched` | WebSocket + Push | `trade_matched.txt.tera`, `push_notification.txt.tera` | Trade match alert to buyer and seller — WebSocket (live) + FCM push (mobile/web) |
+| `SettlementProcessed` | WebSocket + Push | `settlement_processed.txt.tera`, `push_notification.txt.tera` | Settlement status to buyer and seller (when party UUIDs present) |
 | `ErcIssued` | Email | `erc_issued.html.tera` | Renewable Energy Certificate issuance |
 | `VppDispatched` | WebSocket | `vpp_dispatched.txt.tera` | Virtual Power Plant dispatch alert |
 | `PasswordResetRequested` | Email | `password_reset.html.tera` | Password reset link with URL rewriting |
 | `VerificationEmailRequested` | Email | `verify_email.html.tera` | Email verification with URL rewriting |
 | `UserOnboarded` | WebSocket | `user_onboarded.txt.tera` | On-chain account creation confirmation |
 | `MeterOnboarded` | WebSocket | `meter_onboarded.txt.tera` | Smart meter registration confirmation |
-| `UserWalletLinked` | WebSocket | `security_alert.txt.tera` | Security alert for wallet linking |
+| `PriceAlertTriggered` | WebSocket + Push | `price_alert_triggered.txt.tera`, `push_notification.txt.tera` | Price-alert firing to the alert owner |
+| `UserWalletLinked` | WebSocket + Push | `security_alert.txt.tera`, `push_notification.txt.tera` | Security alert for wallet linking (push so owner sees it off-session) |

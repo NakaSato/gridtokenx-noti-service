@@ -52,7 +52,12 @@ pub struct Config {
     // External Provider Keys (optional)
     pub twilio_account_sid: Option<String>,
     pub twilio_auth_token: Option<String>,
+    /// Firebase project id (FCM HTTP v1 `projects/{id}/messages:send`).
     pub fcm_project_id: Option<String>,
+    /// Path to the Google service-account JSON used to mint FCM `OAuth2` tokens.
+    /// When both this and `fcm_project_id` are set, the real `FcmProvider` is
+    /// wired; otherwise the Push channel falls back to the mock sink.
+    pub fcm_credentials_path: Option<String>,
 
     // SMTP Configuration
     pub smtp_host: Option<String>,

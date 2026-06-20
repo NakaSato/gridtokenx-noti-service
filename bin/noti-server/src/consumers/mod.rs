@@ -7,6 +7,10 @@
 mod events;
 mod url;
 
+// Re-exported so integration tests can drive the event→queue routing layer
+// directly (`tests/template_coverage.rs`) without a live Kafka broker.
+pub use events::{MsgCtx, dispatch};
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,8 +32,6 @@ use noti_core::health::{KafkaConsumerHealth, unix_now_secs};
 use noti_logic::NotificationOrchestrator;
 use noti_persistence::messaging::kafka;
 use noti_persistence::messaging::rabbitmq::{NotificationTask, RabbitMQClient};
-
-use events::MsgCtx;
 
 // ---------------------------------------------------------------------------
 // Kafka consumer

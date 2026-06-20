@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use buffa::view::OwnedView;
 use connectrpc::{ConnectError, Response, response::RequestContext as Context};
-use tracing::info;
+use jsonwebtoken::{DecodingKey, Validation, decode};
+use serde::Deserialize;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use noti_core::domain::NotificationChannel;
@@ -14,14 +16,56 @@ use noti_protocol::noti::{
     NotificationStatusResponse, SendNotificationRequestView,
 };
 
+/// Minimal claim set we require from a caller's JWT — only the subject is read;
+/// `exp` is enforced by `Validation::default()` (which requires the claim).
+#[derive(Deserialize)]
+struct Claims {
+    sub: String,
+}
+
 pub struct NotificationGrpcService {
     orchestrator: Arc<NotificationOrchestrator>,
+    /// HS256 secret the caller's bearer token must be signed with. Shared with
+    /// the WebSocket gate (`JwtSecret`) — same `JWT_SECRET` env var.
+    jwt_secret: Arc<String>,
 }
 
 impl NotificationGrpcService {
     #[must_use]
-    pub fn new(orchestrator: Arc<NotificationOrchestrator>) -> Self {
-        Self { orchestrator }
+    pub fn new(orchestrator: Arc<NotificationOrchestrator>, jwt_secret: String) -> Self {
+        Self {
+            orchestrator,
+            jwt_secret: Arc::new(jwt_secret),
+        }
+    }
+
+    /// Authenticate a gRPC call from its `authorization: Bearer <jwt>` header.
+    ///
+    /// Returns the authenticated subject (the JWT `sub`) on success, or
+    /// `ConnectError::unauthenticated` if the header is absent, malformed, or
+    /// the token fails HS256 signature / expiry validation. Mirrors the
+    /// WebSocket JWT gate (`websocket::ws_handler`) so REST, WS, and gRPC share
+    /// one auth scheme.
+    fn authenticate(&self, ctx: &Context) -> Result<String, ConnectError> {
+        let header = ctx
+            .header("authorization")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                ConnectError::unauthenticated("missing authorization header")
+            })?;
+
+        let token = header.strip_prefix("Bearer ").unwrap_or(header).trim();
+        if token.is_empty() {
+            return Err(ConnectError::unauthenticated("empty bearer token"));
+        }
+
+        let key = DecodingKey::from_secret(self.jwt_secret.as_bytes());
+        let data = decode::<Claims>(token, &key, &Validation::default()).map_err(|e| {
+            warn!("🔒 gRPC JWT validation failed: {e}");
+            ConnectError::unauthenticated("invalid or expired token")
+        })?;
+
+        Ok(data.claims.sub)
     }
 }
 
@@ -30,11 +74,12 @@ impl NotificationGrpcService {
 impl NotificationService for NotificationGrpcService {
     async fn send_notification(
         &self,
-        _ctx: Context,
+        ctx: Context,
         request: OwnedView<SendNotificationRequestView<'static>>,
     ) -> Result<Response<NotificationResponse>, ConnectError> {
+        let subject = self.authenticate(&ctx)?;
         info!(
-            "📬 gRPC: SendNotification request for template {}",
+            "📬 gRPC: SendNotification request for template {} (caller {subject})",
             request.template_id
         );
 
@@ -94,11 +139,12 @@ impl NotificationService for NotificationGrpcService {
 
     async fn get_notification_status(
         &self,
-        _ctx: Context,
+        ctx: Context,
         request: OwnedView<GetNotificationStatusRequestView<'static>>,
     ) -> Result<Response<NotificationStatusResponse>, ConnectError> {
+        let subject = self.authenticate(&ctx)?;
         info!(
-            "🔍 gRPC: GetNotificationStatus request for {}",
+            "🔍 gRPC: GetNotificationStatus request for {} (caller {subject})",
             request.notification_id
         );
 

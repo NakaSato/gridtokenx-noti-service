@@ -47,7 +47,17 @@ uuid.workspace = true
 [dev-dependencies]
 noti-core = { workspace = true, features = ["mocks"] }
 mockall.workspace = true
+async-trait.workspace = true
 # Live Kafka ingest e2e: ephemeral broker + a real rdkafka producer feeding
 # the production consumer. Requires a Docker/OrbStack daemon (panics without).
+# postgres/redis added for the full-pipeline e2e (tests/full_pipeline.rs).
 testcontainers = "0.24"
-testcontainers-modules = { version = "0.12", features = ["kafka", "rabbitmq"] }
+testcontainers-modules = { version = "0.12", features = [
+    "kafka",
+    "rabbitmq",
+    "postgres",
+    "redis",
+] }
+# Startup-smoke e2e (tests/startup_smoke.rs): hit the live `/health` endpoint of
+# a fully booted `startup::run` over real HTTP.
+reqwest.workspace = true

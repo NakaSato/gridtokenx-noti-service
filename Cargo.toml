@@ -119,8 +119,8 @@ regex = "1.11"
 # Email
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "serde", "smtp-transport", "builder"] }
 
-# HTTP Client (webhook delivery)
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# HTTP Client (webhook delivery, FCM push)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Blockchain (Shared)
 gridtokenx-blockchain-core = { path = "../gridtokenx-blockchain-core" }
