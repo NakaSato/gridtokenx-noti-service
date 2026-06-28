@@ -150,3 +150,31 @@ pub mod keys {
         format!("ws_registry:{user_id}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::keys;
+
+    #[test]
+    fn key_formats_are_stable() {
+        // Redis-key contract: a silent format change orphans existing keys
+        // (idempotency replays double-send, rate limits reset, templates miss).
+        assert_eq!(keys::idempotency("evt-1"), "idempotency:evt-1");
+        assert_eq!(keys::template("welcome"), "template:welcome");
+        assert_eq!(keys::ws_registry("uid-1"), "ws_registry:uid-1");
+    }
+
+    #[test]
+    fn rate_limit_orders_channel_then_recipient() {
+        // (channel, recipient) — channel-first; a swap would merge unrelated
+        // limits (e.g. email vs sms to the same address).
+        assert_eq!(
+            keys::rate_limit("email", "u@x.io"),
+            "rate_limit:email:u@x.io"
+        );
+        assert_ne!(
+            keys::rate_limit("email", "sms"),
+            keys::rate_limit("sms", "email")
+        );
+    }
+}
