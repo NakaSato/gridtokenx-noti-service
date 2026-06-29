@@ -282,6 +282,14 @@ async fn handle_record(
         .unwrap_or("unknown")
         .to_string();
 
+    // The producer's stable, globally-unique event id (IAM's `Event.id`, carried
+    // as the envelope `id`). Used as the idempotency seed so redeliveries dedup
+    // but Kafka offset resets don't collide fresh events with stale rows.
+    let event_id = event
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
     info!(
         "Processing event: {} from topic: {}",
         event_type, rec.topic
@@ -296,6 +304,7 @@ async fn handle_record(
     let ctx = MsgCtx {
         partition: rec.partition,
         offset: rec.offset,
+        event_id,
     };
 
     events::dispatch(orchestrator, frontend_url, &ctx, &event_type, data).await
@@ -626,7 +635,32 @@ mod tests {
         assert_eq!(
             n.idempotency_key.as_deref(),
             Some("kafka:email_verified:4:77"),
-            "record partition/offset thread into the idempotency key"
+            "no envelope id → kafka partition/offset fallback in the idempotency key"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_record_seeds_idempotency_key_with_envelope_event_id() {
+        let (orch, sink) = recording_orchestrator();
+        // A real IAM envelope carries a top-level `id` (Event.id UUID). It must
+        // seed the idempotency key instead of the kafka coordinates, so an
+        // offset reset can't collide a fresh event with a stale notification row.
+        let payload = serde_json::json!({
+            "id": "11111111-2222-3333-4444-555555555555",
+            "event_type": "EmailVerified",
+            "data": { "email": "alice@example.com", "username": "alice" }
+        })
+        .to_string();
+
+        handle_record(&orch, Some("https://app.gridtokenx.test"), &record(Some(&payload)))
+            .await
+            .expect("handle_record ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(
+            queued[0].idempotency_key.as_deref(),
+            Some("email_verified:11111111-2222-3333-4444-555555555555"),
+            "envelope id seeds the idempotency key"
         );
     }
 

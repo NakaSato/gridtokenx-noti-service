@@ -17,10 +17,32 @@ use noti_logic::NotificationOrchestrator;
 
 use super::url::{build_callback_url, rewrite_url, urlencode};
 
-/// Kafka message coordinates, used to derive idempotency keys.
+/// Event identity used to derive idempotency keys. Prefers the producer's
+/// stable event id (IAM's `Event.id` UUID, carried as the envelope `id`); the
+/// Kafka `partition`/`offset` are only a fallback for events that lack one.
 pub struct MsgCtx {
     pub partition: i32,
     pub offset: i64,
+    /// Producer-assigned unique event id (envelope `id`), if present.
+    pub event_id: Option<String>,
+}
+
+impl MsgCtx {
+    /// Build an idempotency key for one notification derived from this event.
+    ///
+    /// `label` discriminates notifications that originate from the **same**
+    /// event (e.g. a matched trade fans out to buyer/seller × ws/push), so each
+    /// gets a distinct key. The key is seeded with the producer's stable event
+    /// id when available — Kafka `(partition, offset)` is NOT unique over time
+    /// (topic recreation / cluster rebuild resets offsets), which silently
+    /// dedup-dropped fresh notifications against stale rows. Falls back to the
+    /// `kafka:` coordinate form only when the envelope carried no id.
+    pub fn idem(&self, label: &str) -> String {
+        match &self.event_id {
+            Some(id) => format!("{label}:{id}"),
+            None => format!("kafka:{label}:{}:{}", self.partition, self.offset),
+        }
+    }
 }
 
 /// Parse an optional UUID string, returning `None` on absence or parse error.
@@ -297,10 +319,7 @@ async fn email_verified(
             p.email,
             "welcome.html.tera".to_string(),
             serde_json::json!({ "name": p.username, "dashboard_url": dashboard_url }),
-            Some(format!(
-                "kafka:email_verified:{}:{}",
-                ctx.partition, ctx.offset
-            )),
+            Some(ctx.idem("email_verified")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -337,10 +356,7 @@ async fn order_matched(
                 uid.to_string(),
                 "trade_matched.txt.tera".to_string(),
                 serde_json::json!({ "role": role, "amount": p.amount, "price": p.price }),
-                Some(format!(
-                    "kafka:matched:{role}:ws:{}:{}",
-                    ctx.partition, ctx.offset
-                )),
+                Some(ctx.idem(&format!("matched:{role}:ws"))),
             )
             .await
             .map_err(into_anyhow)?;
@@ -355,7 +371,7 @@ async fn order_matched(
             uid,
             "Trade Matched",
             body,
-            format!("kafka:matched:{role}:push:{}:{}", ctx.partition, ctx.offset),
+            ctx.idem(&format!("matched:{role}:push")),
         )
         .await?;
     }
@@ -403,10 +419,7 @@ async fn settlement_processed(
                     "amount": p.amount,
                     "price": p.price
                 }),
-                Some(format!(
-                    "kafka:settlement:{role}:{}:{}",
-                    ctx.partition, ctx.offset
-                )),
+                Some(ctx.idem(&format!("settlement:{role}"))),
             )
             .await
             .map_err(into_anyhow)?;
@@ -420,10 +433,7 @@ async fn settlement_processed(
                 plain(&p.amount),
                 plain(&p.price)
             ),
-            format!(
-                "kafka:settlement:{role}:push:{}:{}",
-                ctx.partition, ctx.offset
-            ),
+            ctx.idem(&format!("settlement:{role}:push")),
         )
         .await?;
     }
@@ -458,7 +468,7 @@ async fn erc_issued(
             email,
             "erc_issued.html.tera".to_string(),
             serde_json::json!({ "amount": p.energy_amount }),
-            Some(format!("kafka:erc:{}:{}", ctx.partition, ctx.offset)),
+            Some(ctx.idem("erc")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -498,10 +508,7 @@ async fn vpp_dispatched(
                 "target_kw": p.target_kw,
                 "members_count": p.members_commanded
             }),
-            Some(format!(
-                "kafka:vpp_dispatch:{}:{}",
-                ctx.partition, ctx.offset
-            )),
+            Some(ctx.idem("vpp_dispatch")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -534,10 +541,7 @@ async fn price_alert_triggered(
                 "target_price": p.target_price,
                 "triggered_price": p.triggered_price
             }),
-            Some(format!(
-                "kafka:price_alert:{}:{}",
-                ctx.partition, ctx.offset
-            )),
+            Some(ctx.idem("price_alert")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -552,7 +556,7 @@ async fn price_alert_triggered(
             plain(&p.target_price),
             plain(&p.triggered_price)
         ),
-        format!("kafka:price_alert:push:{}:{}", ctx.partition, ctx.offset),
+        ctx.idem("price_alert:push"),
     )
     .await?;
 
@@ -590,7 +594,7 @@ async fn password_reset_requested(
             p.email,
             "password_reset.html.tera".to_string(),
             serde_json::json!({ "reset_url": reset_url }),
-            Some(format!("kafka:pwd_reset:{}:{}", ctx.partition, ctx.offset)),
+            Some(ctx.idem("pwd_reset")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -644,10 +648,7 @@ async fn verification_email_requested(
             p.email,
             "verify_email.html.tera".to_string(),
             serde_json::json!({ "name": p.username, "verification_url": verification_url }),
-            Some(format!(
-                "kafka:verify_email:{}:{}",
-                ctx.partition, ctx.offset
-            )),
+            Some(ctx.idem("verify_email")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -678,7 +679,7 @@ async fn user_onboarded(
                 "user_account_pda": p.user_account_pda,
                 "transaction_signature": p.transaction_signature
             }),
-            Some(format!("kafka:onboard:{}:{}", ctx.partition, ctx.offset)),
+            Some(ctx.idem("onboard")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -710,7 +711,7 @@ async fn meter_onboarded(
                 "meter_type": p.meter_type,
                 "transaction_signature": p.transaction_signature
             }),
-            Some(format!("kafka:meter:{}:{}", ctx.partition, ctx.offset)),
+            Some(ctx.idem("meter")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -742,10 +743,7 @@ async fn user_wallet_linked(
                 "shard_id": p.shard_id,
                 "transaction_signature": p.transaction_signature
             }),
-            Some(format!(
-                "kafka:wallet_link:{}:{}",
-                ctx.partition, ctx.offset
-            )),
+            Some(ctx.idem("wallet_link")),
         )
         .await
         .map_err(into_anyhow)?;
@@ -757,7 +755,7 @@ async fn user_wallet_linked(
         uid,
         "Security Alert: Wallet Linked",
         format!("A wallet ({}) was linked to your account.", p.wallet_address),
-        format!("kafka:wallet_link:push:{}:{}", ctx.partition, ctx.offset),
+        ctx.idem("wallet_link:push"),
     )
     .await?;
 
@@ -815,6 +813,17 @@ mod tests {
         MsgCtx {
             partition: 2,
             offset: 99,
+            event_id: Some("evt-abc".to_string()),
+        }
+    }
+
+    /// Context lacking a producer event id — exercises the `kafka:` coordinate
+    /// fallback path of `MsgCtx::idem`.
+    fn ctx_no_id() -> MsgCtx {
+        MsgCtx {
+            partition: 2,
+            offset: 99,
+            event_id: None,
         }
     }
 
@@ -855,9 +864,51 @@ mod tests {
             n.variables["dashboard_url"],
             "https://app.gridtokenx.test"
         );
+        // Keyed on the producer's stable event id, not kafka coordinates.
+        assert_eq!(n.idempotency_key.as_deref(), Some("email_verified:evt-abc"));
+    }
+
+    #[tokio::test]
+    async fn idempotency_key_uses_event_id_for_verification_email() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "email": "bob@example.com",
+            "username": "bob",
+            "token": "tok-123"
+        });
+
+        dispatch(
+            &orch,
+            Some("https://app.gridtokenx.test/"),
+            &ctx(),
+            "VerificationEmailRequested",
+            data,
+        )
+        .await
+        .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
         assert_eq!(
-            n.idempotency_key.as_deref(),
-            Some("kafka:email_verified:2:99")
+            queued[0].idempotency_key.as_deref(),
+            Some("verify_email:evt-abc"),
+            "verify email dedups on the stable event id (survives offset reset)"
+        );
+    }
+
+    #[tokio::test]
+    async fn idempotency_key_falls_back_to_kafka_coords_without_event_id() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "email": "alice@example.com", "username": "alice" });
+
+        dispatch(&orch, None, &ctx_no_id(), "EmailVerified", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(
+            queued[0].idempotency_key.as_deref(),
+            Some("kafka:email_verified:2:99"),
+            "no event id → kafka coordinate fallback"
         );
     }
 
