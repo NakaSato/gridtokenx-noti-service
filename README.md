@@ -157,6 +157,34 @@ sqlx migrate run --database-url "$DATABASE_URL"
 sqlx migrate add <name>
 ```
 
+> Migrations are also **embedded into the binary** (`sqlx::migrate!`) and run
+> automatically on startup — the container does not ship the `migrations/` dir.
+
+### Docker
+
+Multi-stage build. The build **context is the superproject root**
+(`gridtokenx-coresystem/`) because `noti-server` has path dependencies on the
+sibling crates `gridtokenx-blockchain-core` and `gridtokenx-telemetry`:
+
+```bash
+# from gridtokenx-coresystem/ (the superproject root)
+DOCKER_BUILDKIT=1 docker build \
+  -f gridtokenx-noti-service/Dockerfile \
+  -t gridtokenx-noti-service:latest .
+```
+
+- **No build cache in the image.** The cargo registry/git caches and `target/`
+  live only in BuildKit cache mounts, never in an image layer. The final image
+  carries just the stripped binary, the runtime `templates/`, and the shared
+  libs the binary links (`libssl3` via the Solana SDK; CA certs for TLS).
+- Runs as non-root on `debian:bookworm-slim`. Exposes `8080` (HTTP) + `8090`
+  (gRPC).
+
+```bash
+docker run --rm -p 8080:8080 -p 8090:8090 --env-file .env \
+  gridtokenx-noti-service:latest
+```
+
 ---
 
 ## 📄 Event Types
