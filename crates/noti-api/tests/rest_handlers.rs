@@ -239,12 +239,12 @@ async fn list_clamps_limit_to_100() {
 }
 
 #[tokio::test]
-async fn list_without_role_is_unauthorized() {
-    // User header present but no role → ServiceRole::Unknown → require_any 401.
+async fn list_without_role_is_forbidden() {
+    // User header present but no role → ServiceRole::Unknown → require_any 403.
     let user = Uuid::new_v4();
     let repo = Arc::new(FakeRepo::new(vec![], 0));
     let (status, _) = send(repo, get_list(None, Some(user), "")).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

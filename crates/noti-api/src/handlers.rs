@@ -88,7 +88,7 @@ pub async fn list_notifications(
     Query(params): Query<ListNotificationsParams>,
 ) -> Result<Json<ListNotificationsResponse>, (StatusCode, String)> {
     role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
-        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+        .map_err(|(_code, msg)| (StatusCode::FORBIDDEN, msg.to_string()))?;
 
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
     let offset = params.offset.unwrap_or(0).max(0);
@@ -124,7 +124,7 @@ pub async fn mark_notification_as_read(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
-        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+        .map_err(|(_code, msg)| (StatusCode::FORBIDDEN, msg.to_string()))?;
 
     state
         .orchestrator
@@ -144,7 +144,7 @@ pub async fn mark_all_notifications_as_read(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
-        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+        .map_err(|(_code, msg)| (StatusCode::FORBIDDEN, msg.to_string()))?;
 
     state
         .orchestrator
@@ -182,7 +182,7 @@ pub async fn register_device(
     Json(req): Json<RegisterDeviceRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
-        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+        .map_err(|(_code, msg)| (StatusCode::FORBIDDEN, msg.to_string()))?;
 
     let platform = DevicePlatform::from_db(&req.platform.to_lowercase()).ok_or((
         StatusCode::BAD_REQUEST,
@@ -214,7 +214,7 @@ pub async fn revoke_device(
     Path(token): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
-        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+        .map_err(|(_code, msg)| (StatusCode::FORBIDDEN, msg.to_string()))?;
 
     state
         .device_repo
@@ -241,7 +241,7 @@ pub async fn list_devices(
     State(state): State<AppState>,
 ) -> Result<Json<ListDevicesResponse>, (StatusCode, String)> {
     role.require_any(&[ServiceRole::ApiGateway, ServiceRole::Admin])
-        .map_err(|(_code, msg)| (StatusCode::UNAUTHORIZED, msg.to_string()))?;
+        .map_err(|(_code, msg)| (StatusCode::FORBIDDEN, msg.to_string()))?;
 
     let devices = state
         .device_repo

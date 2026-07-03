@@ -280,12 +280,12 @@ async fn register_device_rejects_empty_token_400() {
 }
 
 #[tokio::test]
-async fn register_device_without_role_is_unauthorized() {
+async fn register_device_without_role_is_forbidden() {
     let user = Uuid::new_v4();
     let repo = Arc::new(FakeDeviceRepo::new(vec![]));
     let body = serde_json::json!({ "token": "tok-1", "platform": "web" });
     let (status, _) = send(repo, register_req(None, Some(user), &body)).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -330,7 +330,7 @@ async fn list_devices_returns_active_tokens() {
 }
 
 #[tokio::test]
-async fn list_devices_without_role_is_unauthorized() {
+async fn list_devices_without_role_is_forbidden() {
     let user = Uuid::new_v4();
     let repo = Arc::new(FakeDeviceRepo::new(vec![]));
     let req = Request::builder()
@@ -340,7 +340,7 @@ async fn list_devices_without_role_is_unauthorized() {
         .body(Body::empty())
         .expect("build request");
     let (status, _) = send(repo, req).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 // --- Tests: revoke ----------------------------------------------------------
@@ -368,7 +368,7 @@ async fn revoke_device_routes_and_records_token() {
 }
 
 #[tokio::test]
-async fn revoke_device_without_role_is_unauthorized() {
+async fn revoke_device_without_role_is_forbidden() {
     let user = Uuid::new_v4();
     let repo = Arc::new(FakeDeviceRepo::new(vec![]));
     let req = Request::builder()
@@ -378,6 +378,6 @@ async fn revoke_device_without_role_is_unauthorized() {
         .body(Body::empty())
         .expect("build request");
     let (status, _) = send(repo.clone(), req).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(repo.revoked.lock().unwrap().is_empty(), "nothing revoked");
 }
