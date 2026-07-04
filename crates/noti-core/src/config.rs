@@ -33,6 +33,12 @@ pub struct Config {
     #[serde(default = "default_port")]
     pub port: u16,
     pub database_url: String,
+    /// `PostgreSQL` connection string used only for the startup `sqlx::migrate!`
+    /// run. Falls back to `database_url` when unset. Kept separate because the
+    /// migration's `pg_advisory_lock` is session-scoped: pointing it at a
+    /// session-mode pooler alias avoids leaking the lock into a transaction-mode
+    /// pool shared with regular app traffic.
+    pub migration_database_url: Option<String>,
     pub kafka_brokers: String,
     pub rabbitmq_url: String,
     pub redis_url: String,

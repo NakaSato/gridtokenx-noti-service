@@ -50,6 +50,31 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     // 1. Infrastructure (Persistence & Messaging)
     // -----------------------------------------------------------------------
 
+    // Run migrations on a dedicated single-connection pool pointed at
+    // migration_database_url (a session-mode pooler alias in prod). The
+    // migration's pg_advisory_lock is session-scoped — running it on a pool
+    // shared with regular app traffic risks the pooler handing the locked
+    // connection to another client under transaction-mode pooling, leaking the
+    // lock forever. Closed immediately after; the tiered pools below never
+    // touch this connection.
+    let migration_database_url = config
+        .migration_database_url
+        .clone()
+        .unwrap_or_else(|| config.database_url.clone());
+    let migration_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&migration_database_url)
+        .await
+        .context("Failed to connect to PostgreSQL for migrations")?;
+
+    sqlx::migrate!("../../migrations")
+        .run(&migration_pool)
+        .await
+        .context("Failed to run database migrations")?;
+
+    info!("✅ Database migrations completed");
+    migration_pool.close().await;
+
     // a) Database (PostgreSQL) - Tiered Routing
     let high_priority_pool = PgPoolOptions::new()
         .max_connections(config.database_max_connections)
@@ -82,14 +107,6 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         config.database_max_connections,
         config.database_max_connections / 2
     );
-
-    // Run migrations on high-priority pool
-    sqlx::migrate!("../../migrations")
-        .run(&high_priority_pool)
-        .await
-        .context("Failed to run database migrations")?;
-
-    info!("✅ Database migrations completed");
 
     // b) Cache (Redis)
     let cache_service = Arc::new(
