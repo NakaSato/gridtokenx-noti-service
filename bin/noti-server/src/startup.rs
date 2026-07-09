@@ -363,7 +363,17 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         // Trace + count every HTTP request. Outermost layers so they wrap the
         // merged REST + ConnectRPC routers.
         .layer(axum::middleware::from_fn(crate::metrics::track_http))
-        .layer(tower_http::trace::TraceLayer::new_for_http());
+        // INFO-level request span so traces export to Tempo (the default
+        // make_span is DEBUG and is filtered out under the standard `info` env).
+        .layer(tower_http::trace::TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    uri = %request.uri().path(),
+                )
+            },
+        ));
 
     // -----------------------------------------------------------------------
     // 6. Servers
