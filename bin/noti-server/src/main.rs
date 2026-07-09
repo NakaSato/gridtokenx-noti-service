@@ -9,8 +9,9 @@ async fn main() {
     // 1. Load environment variables
     dotenvy::dotenv().ok();
 
-    // 2. Initialize telemetry (tracing + metrics)
-    telemetry::init_telemetry("gridtokenx-noti");
+    // 2. Initialize telemetry (tracing + metrics). Bind the guard for the whole
+    // process so a graceful shutdown flushes buffered spans.
+    let _telemetry = telemetry::init_telemetry("gridtokenx-noti");
 
     // Install the Prometheus recorder before any metric is emitted.
     metrics::install_recorder();
