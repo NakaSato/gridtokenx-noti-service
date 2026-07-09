@@ -185,13 +185,17 @@ async fn run_kafka_session(
         while let Some(rec) = rx.recv().await {
             match handle_record(&worker_orch, worker_frontend.as_deref(), &rec).await {
                 Ok(()) => {
+                    crate::metrics::record_kafka_message(&rec.topic);
                     if let Err(e) =
                         commit_offset(&worker_consumer, &rec.topic, rec.partition, rec.offset)
                     {
                         error!("Failed to commit Kafka offset: {e}");
                     }
                 }
-                Err(e) => error!("Failed to handle Kafka message: {e}"),
+                Err(e) => {
+                    crate::metrics::record_kafka_error(&rec.topic);
+                    error!("Failed to handle Kafka message: {e}");
+                }
             }
         }
     });

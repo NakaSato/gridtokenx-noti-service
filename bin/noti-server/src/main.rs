@@ -1,5 +1,5 @@
 use noti_core::config::Config;
-use noti_server::{startup, telemetry};
+use noti_server::{metrics, startup, telemetry};
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -11,6 +11,9 @@ async fn main() {
 
     // 2. Initialize telemetry (tracing + metrics)
     telemetry::init_telemetry("gridtokenx-noti");
+
+    // Install the Prometheus recorder before any metric is emitted.
+    metrics::install_recorder();
 
     // External NTP server (Cloudflare primary, Google fallback) as primary wall-clock.
     // Background poller; `telemetry::time::now()` is non-blocking, degrades to OS clock.

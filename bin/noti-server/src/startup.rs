@@ -354,11 +354,16 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
             "/health/ready",
             axum::routing::get(noti_api::handlers::health_ready),
         )
+        .route("/metrics", axum::routing::get(metrics_handler))
         .layer(axum::Extension(kafka_health.clone()))
         .layer(axum::Extension(ws_manager))
         .layer(axum::Extension(noti_api::websocket::JwtSecret(
             config.jwt_secret.clone(),
-        )));
+        )))
+        // Trace + count every HTTP request. Outermost layers so they wrap the
+        // merged REST + ConnectRPC routers.
+        .layer(axum::middleware::from_fn(crate::metrics::track_http))
+        .layer(tower_http::trace::TraceLayer::new_for_http());
 
     // -----------------------------------------------------------------------
     // 6. Servers
@@ -431,4 +436,10 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
 
 async fn token_to_future(token: CancellationToken) {
     token.cancelled().await;
+}
+
+/// Serves Prometheus metrics in text-exposition format. Gated to internal CIDRs
+/// at the APISIX gateway (same policy as `/health`).
+async fn metrics_handler() -> String {
+    crate::metrics::render()
 }
