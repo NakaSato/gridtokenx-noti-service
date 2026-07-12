@@ -225,10 +225,10 @@ The service runs two HTTP servers concurrently:
 
 | Server | Default Port | Transport | Purpose |
 |:---|:---|:---|:---|
-| HTTP/REST | `PORT` (8080) | TCP | Axum with health, notification CRUD, WebSocket upgrade |
+| HTTP/REST | `PORT` (8080) | TCP | Axum with health, notification CRUD, WebSocket upgrade, Swagger UI |
 | gRPC | `PORT + 10` (8090) | TCP/HTTP2 + UDP/QUIC (HTTP/3) | ConnectRPC service, `quinn` + `h3` for QUIC |
 
-Both servers share the same Axum router and shut down gracefully via `CancellationToken`.
+Both servers share the same base Axum router and shut down gracefully via `CancellationToken`. The HTTP router additionally merges Swagger UI (`/swagger-ui`, `/api-docs/openapi.json`) — the docs UI is not served on the gRPC port.
 
 ---
 
@@ -317,6 +317,8 @@ Authorization is delegated to `gridtokenx-blockchain-core::auth::ServiceRole` (r
 |:---|:---|:---|
 | `GET` | `/health` | `health_check` |
 | `GET` | `/health/live` | `health_live` |
+| `GET` | `/swagger-ui` | Swagger UI (`utoipa-swagger-ui`, HTTP port only) |
+| `GET` | `/api-docs/openapi.json` | OpenAPI 3.1 spec (`noti-api::openapi::ApiDoc`) |
 | `GET` | `/api/v1/notifications` | `list_notifications` (params: `limit`, `offset`) |
 | `PATCH` | `/api/v1/notifications/{id}` | `mark_notification_as_read` |
 | `POST` | `/api/v1/notifications/read-all` | `mark_all_notifications_as_read` |

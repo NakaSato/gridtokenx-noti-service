@@ -406,7 +406,13 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
         };
 
         let http_token = run_token.clone();
-        let http_router = axum_router.clone();
+        // Swagger UI at /swagger-ui, raw spec at /api-docs/openapi.json.
+        // Merged onto the HTTP router only — the gRPC/ConnectRPC port never
+        // serves the browser docs UI.
+        let openapi = <noti_api::openapi::ApiDoc as utoipa::OpenApi>::openapi();
+        let swagger =
+            utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi);
+        let http_router = axum_router.clone().merge(swagger);
         let http_srv = tokio::spawn(async move {
             info!("🚀 REST Server running on http://{}", http_addr);
             if let Err(e) = axum::serve(http_listener, http_router)

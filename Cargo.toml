@@ -110,6 +110,10 @@ rustls-pemfile = "2.0"
 # JWT
 jsonwebtoken = "9.3"
 
+# OpenAPI / Swagger UI
+utoipa = { version = "5.5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
+
 # Templating
 tera = "1.20"
 

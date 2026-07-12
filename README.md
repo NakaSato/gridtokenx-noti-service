@@ -87,6 +87,8 @@ The HTTP API serves on `PORT` (default: `8080`). All `/api/v1/` endpoints requir
 |:---|:---|:---|:---|
 | `/health` | `GET` | None | Service health status |
 | `/health/live` | `GET` | None | Service liveness probe |
+| `/swagger-ui` | `GET` | None | Swagger UI (interactive OpenAPI docs) |
+| `/api-docs/openapi.json` | `GET` | None | Raw OpenAPI 3.1 spec |
 | `/api/v1/noti` | `GET` | Header | List notification history (params: `limit`, `offset`) |
 | `/api/v1/noti/{id}` | `PATCH` | Header | Mark a specific notification as read |
 | `/api/v1/noti/read-all` | `POST` | Header | Mark all user notifications as read |

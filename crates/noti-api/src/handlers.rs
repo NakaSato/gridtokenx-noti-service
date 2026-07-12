@@ -11,6 +11,7 @@ use noti_core::domain::DevicePlatform;
 use noti_core::health::{KafkaConsumerHealth, unix_now_secs};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -20,6 +21,12 @@ use crate::auth::UserContext;
 /// above the consumer's idle heartbeat tick so a quiet topic never trips it.
 const READY_STALE_AFTER_SECS: i64 = 90;
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "health",
+    responses((status = 200, description = "Service is up"))
+)]
 #[allow(clippy::unused_async)]
 pub async fn health_check() -> impl IntoResponse {
     (
@@ -65,22 +72,38 @@ pub async fn health_ready(
 // Notification REST Handlers (Modernized)
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct ListNotificationsParams {
+    /// Max rows to return (clamped 1..=100, default 20).
     pub limit: Option<i64>,
+    /// Rows to skip (default 0).
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ListNotificationsResponse {
     pub notifications: Vec<noti_core::domain::Notification>,
     pub unread_count: i64,
     pub total: usize,
 }
 
+/// List the authenticated user's notifications (paginated) with unread count.
+///
 /// # Errors
 ///
 /// Returns an error if the user is unauthorized or the orchestrator call fails.
+#[utoipa::path(
+    get,
+    path = "/api/v1/noti",
+    tag = "notifications",
+    params(ListNotificationsParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Notifications page", body = ListNotificationsResponse),
+        (status = 403, description = "Caller role not permitted"),
+        (status = 500, description = "Orchestrator failure"),
+    )
+)]
 pub async fn list_notifications(
     role: ServiceRole,
     user: UserContext,
@@ -114,9 +137,23 @@ pub async fn list_notifications(
     }))
 }
 
+/// Mark a single notification as read.
+///
 /// # Errors
 ///
 /// Returns an error if the user is unauthorized or the orchestrator call fails.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/noti/{id}",
+    tag = "notifications",
+    params(("id" = Uuid, Path, description = "Notification id")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Marked read"),
+        (status = 403, description = "Caller role not permitted"),
+        (status = 500, description = "Orchestrator failure"),
+    )
+)]
 pub async fn mark_notification_as_read(
     role: ServiceRole,
     user: UserContext,
@@ -135,9 +172,22 @@ pub async fn mark_notification_as_read(
     Ok(Json(json!({ "success": true })))
 }
 
+/// Mark all of the authenticated user's notifications as read.
+///
 /// # Errors
 ///
 /// Returns an error if the user is unauthorized or the orchestrator call fails.
+#[utoipa::path(
+    post,
+    path = "/api/v1/noti/read-all",
+    tag = "notifications",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "All marked read"),
+        (status = 403, description = "Caller role not permitted"),
+        (status = 500, description = "Orchestrator failure"),
+    )
+)]
 pub async fn mark_all_notifications_as_read(
     role: ServiceRole,
     user: UserContext,
@@ -159,7 +209,7 @@ pub async fn mark_all_notifications_as_read(
 // Push Device-Token Registration (Push / FCM channel)
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterDeviceRequest {
     pub token: String,
     /// One of `android`, `ios`, `web`.
@@ -175,6 +225,19 @@ pub struct RegisterDeviceRequest {
 ///
 /// Returns `400` for an unknown platform, `401` if unauthorized, `500` if the
 /// registry write fails.
+#[utoipa::path(
+    post,
+    path = "/api/v1/noti/devices",
+    tag = "devices",
+    request_body = RegisterDeviceRequest,
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Device registered"),
+        (status = 400, description = "Unknown platform or empty token"),
+        (status = 403, description = "Caller role not permitted"),
+        (status = 500, description = "Registry write failed"),
+    )
+)]
 pub async fn register_device(
     role: ServiceRole,
     user: UserContext,
@@ -207,6 +270,18 @@ pub async fn register_device(
 /// # Errors
 ///
 /// Returns `401` if unauthorized, `500` if the registry write fails.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/noti/devices/{token}",
+    tag = "devices",
+    params(("token" = String, Path, description = "Device token to revoke")),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Device revoked"),
+        (status = 403, description = "Caller role not permitted"),
+        (status = 500, description = "Registry write failed"),
+    )
+)]
 pub async fn revoke_device(
     role: ServiceRole,
     _user: UserContext,
@@ -225,7 +300,7 @@ pub async fn revoke_device(
     Ok(Json(json!({ "success": true })))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ListDevicesResponse {
     pub devices: Vec<noti_core::domain::DeviceToken>,
 }
@@ -235,6 +310,17 @@ pub struct ListDevicesResponse {
 /// # Errors
 ///
 /// Returns `401` if unauthorized, `500` if the registry read fails.
+#[utoipa::path(
+    get,
+    path = "/api/v1/noti/devices",
+    tag = "devices",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Active device tokens", body = ListDevicesResponse),
+        (status = 403, description = "Caller role not permitted"),
+        (status = 500, description = "Registry read failed"),
+    )
+)]
 pub async fn list_devices(
     role: ServiceRole,
     user: UserContext,

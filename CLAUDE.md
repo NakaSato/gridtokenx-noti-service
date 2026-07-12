@@ -65,7 +65,7 @@ bin/noti-server → noti-api → noti-logic → noti-core
 
 The service runs two servers concurrently (both plain-TCP `axum::serve`, see
 `bin/noti-server/src/startup.rs`):
-- **HTTP/REST** on `PORT` (default 8080) — Axum with health, notification CRUD, WebSocket upgrade
+- **HTTP/REST** on `PORT` (default 8080) — Axum with health, notification CRUD, WebSocket upgrade, and Swagger UI (`/swagger-ui` + `/api-docs/openapi.json`, HTTP port only). OpenAPI spec built from `#[utoipa::path]` handlers, aggregated in `noti-api::openapi::ApiDoc`.
 - **gRPC / ConnectRPC** on `PORT + 10` (default 8090) — ConnectRPC over HTTP/2 (TCP)
 
 ## Configuration

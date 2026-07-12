@@ -2,10 +2,11 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// The delivery channel for a notification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub enum NotificationChannel {
     Email,
     Sms,
@@ -15,7 +16,7 @@ pub enum NotificationChannel {
 }
 
 /// Lifecycle status of a notification.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub enum NotificationStatus {
     Pending,
     Processing,
@@ -26,7 +27,7 @@ pub enum NotificationStatus {
 }
 
 /// Platform a push device token targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum DevicePlatform {
     Android,
@@ -58,7 +59,7 @@ impl DevicePlatform {
 }
 
 /// A registered push device token for a user (mobile or web).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeviceToken {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -69,7 +70,7 @@ pub struct DeviceToken {
 }
 
 /// A persisted notification record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Notification {
     pub id: Uuid,
     pub user_id: Option<Uuid>,
@@ -77,6 +78,7 @@ pub struct Notification {
     pub status: NotificationStatus,
     pub recipient: String,
     pub template_id: String,
+    #[schema(value_type = Object)]
     pub variables: serde_json::Value,
     pub provider_id: Option<String>,
     pub provider_ref: Option<String>,

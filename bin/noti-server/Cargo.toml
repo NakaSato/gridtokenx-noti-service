@@ -36,6 +36,9 @@ metrics-exporter-prometheus.workspace = true
 connectrpc.workspace = true
 http.workspace = true
 
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
+
 # Messaging (for consumer loops)
 rdkafka.workspace = true
 lapin.workspace = true
