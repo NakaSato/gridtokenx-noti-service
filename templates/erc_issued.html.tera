@@ -1,35 +1,43 @@
 {% extends "base.html.tera" %}
 
 {% block subject %}New Renewable Energy Certificate issued{% endblock subject %}
-{% block title %}🏆 New Certificate Issued!{% endblock title %}
+{% block preheader %}Your renewable energy contribution was certified on-chain.{% endblock preheader %}
+{% block title %}New Certificate Issued!{% endblock title %}
 {% block subtitle %}Renewable Energy Certificate (ERC){% endblock subtitle %}
+
+{# Success-green accent (Trading UI success token #00c951). #}
+{% block header_bg %}#00a544{% endblock header_bg %}
+{% block header_gradient %}linear-gradient(135deg, #00c951 0%, #00a544 100%){% endblock header_gradient %}
 
 {% block extra_styles %}
         .certificate-card {
-            background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-            border: 2px solid #a7f3d0;
-            border-radius: 10px;
+            background-color: #ecfdf3;
+            border: 2px solid #a7f3c9;
+            border-radius: 8px;
+        }
+        .certificate-card td {
             padding: 28px;
             text-align: center;
-            margin: 24px 0;
         }
         .certificate-card .amount {
-            font-size: 36px;
-            font-weight: 700;
-            color: #059669;
             margin: 0;
+            font-size: 38px;
+            font-weight: 700;
+            color: #00a544;
+            letter-spacing: -0.5px;
         }
         .certificate-card .unit {
-            font-size: 14px;
-            color: #047857;
             margin: 4px 0 0;
+            font-size: 14px;
+            color: #047847;
         }
         .certificate-card .label {
-            font-size: 13px;
-            color: #065f46;
             margin: 12px 0 0;
+            font-size: 12px;
+            font-weight: 700;
+            color: #065f39;
             text-transform: uppercase;
-            letter-spacing: 1px;
+            letter-spacing: 1.5px;
         }
 {% endblock extra_styles %}
 
@@ -39,12 +47,18 @@
                     Your contribution to the green grid has been recorded. A new
                     <strong>Renewable Energy Certificate (ERC)</strong> has been issued to your account.
                 </p>
-                <div class="certificate-card">
-                    <p class="amount">{{ amount }}</p>
-                    <p class="unit">MWh</p>
-                    <p class="label">Energy Certified</p>
-                </div>
-                <p class="muted" style="text-align: center;">
+
+                <table role="presentation" class="certificate-card" width="100%" cellpadding="0" cellspacing="0" bgcolor="#ecfdf3" style="margin-bottom: 24px;">
+                    <tr>
+                        <td>
+                            <p class="amount">{{ amount }}</p>
+                            <p class="unit">MWh</p>
+                            <p class="label">Energy Certified</p>
+                        </td>
+                    </tr>
+                </table>
+
+                <p class="muted" style="text-align: center; margin-bottom: 0;">
                     This certificate is verifiable on the Solana blockchain and represents
                     your validated renewable energy contribution.
                 </p>

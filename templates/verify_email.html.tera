@@ -1,76 +1,37 @@
 {% extends "base.html.tera" %}
+{% import "_components.html.tera" as ui %}
 
 {% block subject %}Confirm your email to activate your GridTokenX account{% endblock subject %}
-{% block title %}✉️ Verify Your Email{% endblock title %}
+{% block preheader %}One click to verify your email and activate your GridTokenX account.{% endblock preheader %}
+{% block title %}Verify Your Email{% endblock title %}
 {% block subtitle %}Confirm your email address to activate your account{% endblock subtitle %}
 
 {% block extra_styles %}
         .verify-card {
-            margin: 0 0 28px;
+            background-color: #f4f2fe;
+            border: 1px solid #e5ddff;
+            border-radius: 8px;
+        }
+        .verify-card td {
             padding: 28px;
-            background: linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%);
-            border: 1px solid #d1fae5;
-            border-radius: 12px;
             text-align: center;
         }
         .verify-card .badge {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
             width: 56px;
             height: 56px;
-            margin: 0 0 16px;
-            background-color: #d1fae5;
-            color: #059669;
+            margin: 0 auto 16px;
+            background-color: #e5ddff;
+            color: #7b63f1;
             border-radius: 50%;
-            font-size: 28px;
+            font-size: 26px;
+            font-weight: 700;
+            line-height: 56px;
+            text-align: center;
         }
         .verify-card p {
             margin: 0 0 20px;
             font-size: 15px;
-            color: #2d3748;
-        }
-        .btn-lg {
-            padding: 16px 40px;
-            font-size: 17px;
-        }
-        .steps {
-            list-style: none;
-            counter-reset: step;
-            padding: 0;
-            margin: 0 0 24px;
-        }
-        .steps li {
-            position: relative;
-            padding: 6px 0 6px 40px;
-            font-size: 15px;
-            color: #4a5568;
-        }
-        .steps li::before {
-            counter-increment: step;
-            content: counter(step);
-            position: absolute;
-            left: 0;
-            top: 4px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 26px;
-            height: 26px;
-            background-color: #059669;
-            color: #ffffff;
-            border-radius: 50%;
-            font-size: 13px;
-            font-weight: 700;
-        }
-        .note-box {
-            margin: 8px 0 0;
-            padding: 14px 16px;
-            background-color: #fffbeb;
-            border-left: 4px solid #f59e0b;
-            border-radius: 6px;
-            font-size: 13px;
-            color: #92400e;
+            color: #333333;
         }
 {% endblock extra_styles %}
 
@@ -82,28 +43,31 @@
                     activate your account.
                 </p>
 
-                <div class="verify-card">
-                    <div class="badge">✓</div>
-                    <p>Click below to verify your email. You'll be signed in automatically.</p>
-                    <a href="{{ verification_url }}" class="btn btn-lg">Verify My Email</a>
-                </div>
+                <table role="presentation" class="verify-card" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f4f2fe" style="margin-bottom: 28px;">
+                    <tr>
+                        <td>
+                            <div class="badge">&#10003;</div>
+                            <p>Click below to verify your email. You'll be signed in automatically.</p>
+                            <a href="{{ verification_url }}" class="btn" style="background-color: #7b63f1; background: linear-gradient(135deg, #7b63f1 0%, #a899f4 100%); padding: 16px 40px; font-size: 17px;">Verify My Email</a>
+                        </td>
+                    </tr>
+                </table>
 
-                <p style="font-size: 15px; color: #2d3748; font-weight: 600;">What happens next:</p>
-                <ol class="steps">
-                    <li>Your account is activated instantly.</li>
-                    <li>Link your Solana wallet for transactions.</li>
-                    <li>Start trading renewable energy tokens (GRX).</li>
-                </ol>
+                <p class="section-label">What happens next</p>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 24px;">
+                    {{ ui::list_row(icon="1", text="Your account is activated instantly.") }}
+                    {{ ui::list_row(icon="2", text="Link your Solana wallet for transactions.") }}
+                    {{ ui::list_row(icon="3", text="Start trading renewable energy tokens (GRX).") }}
+                </table>
 
-                <div class="divider"></div>
-                <p class="muted">
-                    If the button doesn't work, copy and paste this link into your browser:
-                </p>
-                <div class="link-fallback"><a href="{{ verification_url }}" style="color: #059669; text-decoration: none;">{{ verification_url }}</a></div>
+                <div class="divider" style="margin: 24px 0;">&nbsp;</div>
+                {{ ui::link_fallback(url=verification_url) }}
 
-                <div class="note-box">
-                    You're receiving this because this address was used to register a
-                    GridTokenX account. If that wasn't you, ignore this email — the account
-                    stays inactive and no one can sign in with it.
+                <div class="box box-warn" style="margin-top: 24px;">
+                    <p>
+                        You're receiving this because this address was used to register a
+                        GridTokenX account. If that wasn't you, ignore this email — the account
+                        stays inactive and no one can sign in with it.
+                    </p>
                 </div>
 {% endblock content %}

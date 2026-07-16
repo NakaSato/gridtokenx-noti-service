@@ -99,6 +99,14 @@ mod tests {
                 "security_alert.txt.tera",
                 json!({ "wallet_address": "0xabc", "shard_id": "1", "transaction_signature": "SIG3" }),
             ),
+            (
+                "confirm_wallet.html.tera",
+                json!({
+                    "name": "Carol",
+                    "wallet_address": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+                    "confirmation_url": "https://app.example/wallet/confirm?token=tok"
+                }),
+            ),
         ];
 
         for (name, vars) in cases {
@@ -106,6 +114,14 @@ mod tests {
                 .render(name, vars)
                 .unwrap_or_else(|err| panic!("render '{name}' failed: {err}"));
             assert!(!out.trim().is_empty(), "template '{name}' rendered empty");
+
+            // Shared components (templates/_components.html.tera macros) must
+            // expand to real markup — if autoescaping ever applies to macro
+            // output, buttons/lists ship as literal `&lt;table&gt;` text.
+            assert!(
+                !out.contains("&lt;table") && !out.contains("&lt;a href"),
+                "template '{name}' contains escaped component markup"
+            );
 
             // SmtpProvider derives the email subject from the `<title>` element
             // (the Tera `subject` block). An HTML template that forgets

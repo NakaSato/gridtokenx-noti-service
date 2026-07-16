@@ -200,7 +200,11 @@ const EXPECTED_ROUTED_TEMPLATES: &[&str] = &[
 #[tokio::test]
 async fn every_routed_template_renders_with_handler_variables() {
     let (orch, sink) = recording_orchestrator();
-    let ctx = MsgCtx { partition: 2, offset: 99 };
+    let ctx = MsgCtx {
+        partition: 2,
+        offset: 99,
+        event_id: None,
+    };
 
     for (event_type, frontend, data) in event_cases() {
         dispatch(&orch, frontend, &ctx, event_type, data)

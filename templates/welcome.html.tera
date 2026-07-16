@@ -1,38 +1,10 @@
 {% extends "base.html.tera" %}
+{% import "_components.html.tera" as ui %}
 
 {% block subject %}Welcome to GridTokenX{% endblock subject %}
-{% block title %}⚡ Welcome to GridTokenX!{% endblock title %}
+{% block preheader %}Your account is active — start trading peer-to-peer energy on Solana.{% endblock preheader %}
+{% block title %}Welcome to GridTokenX!{% endblock title %}
 {% block subtitle %}Your gateway to decentralized energy trading{% endblock subtitle %}
-
-{% block extra_styles %}
-        .feature-list {
-            list-style: none;
-            padding: 0;
-            margin: 0 0 24px;
-        }
-        .feature-list li {
-            padding: 10px 0;
-            font-size: 15px;
-            color: #4a5568;
-            display: flex;
-            align-items: center;
-        }
-        .feature-list li::before {
-            content: "✓";
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 24px;
-            height: 24px;
-            background-color: #d1fae5;
-            color: #059669;
-            border-radius: 50%;
-            font-size: 12px;
-            font-weight: 700;
-            margin-right: 12px;
-            flex-shrink: 0;
-        }
-{% endblock extra_styles %}
 
 {% block content %}
                 <p>Hello{% if name %} <strong>{{ name }}</strong>{% endif %},</p>
@@ -40,14 +12,14 @@
                     Your email is verified and your <strong>GridTokenX</strong> account is now active.
                     You're part of the future of peer-to-peer energy trading powered by the Solana blockchain.
                 </p>
-                <p style="font-size: 15px; color: #2d3748; font-weight: 600;">Here's what you can do:</p>
-                <ul class="feature-list">
-                    <li>Trade renewable energy tokens (GRX) on the marketplace</li>
-                    <li>Earn Renewable Energy Certificates (ERCs) for green contributions</li>
-                    <li>Connect smart meters to track on-chain energy generation</li>
-                    <li>Link your Solana wallet for seamless transactions</li>
-                </ul>
-                <p style="text-align: center;">
-                    <a href="{{ dashboard_url | default(value="https://app.gridtokenx.xyz") }}" class="btn">Launch Dashboard</a>
-                </p>
+
+                <p class="section-label">Here's what you can do</p>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 28px;">
+                    {{ ui::list_row(icon="✓", text="Trade renewable energy tokens (GRX) on the marketplace") }}
+                    {{ ui::list_row(icon="✓", text="Earn Renewable Energy Certificates (ERCs) for green contributions") }}
+                    {{ ui::list_row(icon="✓", text="Connect smart meters to track on-chain energy generation") }}
+                    {{ ui::list_row(icon="✓", text="Link your Solana wallet for seamless transactions") }}
+                </table>
+
+                {{ ui::button(url=dashboard_url | default(value="https://app.gridtokenx.xyz"), label="Launch Dashboard") }}
 {% endblock content %}

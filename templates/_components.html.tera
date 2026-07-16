@@ -1,0 +1,36 @@
+{# Shared email UI components. Import with:
+   {% import "_components.html.tera" as ui %}
+   Colors default to the Trading UI primary (#7b63f1 / #7b63f1→#a899f4 gradient);
+   pass overrides for semantic variants (e.g. warning amber on password reset). #}
+
+{# Bulletproof-ish CTA button: centered table wrapper + solid bgcolor fallback
+   under the gradient, so Outlook still shows a branded block. #}
+{% macro button(url, label, bg="#7b63f1", gradient="linear-gradient(135deg, #7b63f1 0%, #a899f4 100%)") %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+        <td align="center" style="padding: 8px 0 24px;">
+            <a href="{{ url }}" class="btn" bgcolor="{{ bg }}"
+               style="background-color: {{ bg }}; background: {{ gradient }};">{{ label }}</a>
+        </td>
+    </tr>
+</table>
+{% endmacro button %}
+
+{# Copy-paste fallback for clients where the button link is broken/blocked. #}
+{% macro link_fallback(url, accent="#7b63f1") %}
+<p class="muted" style="margin-bottom: 8px;">
+    If the button doesn't work, copy and paste this link into your browser:
+</p>
+<div class="link-fallback"><a href="{{ url }}" style="color: {{ accent }}; text-decoration: none;">{{ url }}</a></div>
+{% endmacro link_fallback %}
+
+{# One row of an icon-bullet list (✓ / step number in a colored circle).
+   Wrap rows in: <table role="presentation" width="100%" cellpadding="0" cellspacing="0"> #}
+{% macro list_row(icon, text) %}
+<tr>
+    <td width="26" style="vertical-align: middle;">
+        <div class="list-icon" style="line-height: 26px;">{{ icon }}</div>
+    </td>
+    <td class="list-text">{{ text }}</td>
+</tr>
+{% endmacro list_row %}

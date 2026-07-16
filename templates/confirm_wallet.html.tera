@@ -1,8 +1,35 @@
 {% extends "base.html.tera" %}
+{% import "_components.html.tera" as ui %}
 
 {% block subject %}Confirm your wallet to link it on-chain{% endblock subject %}
-{% block title %}🔗 Confirm Your Wallet{% endblock title %}
+{% block preheader %}Confirm this Solana wallet is yours to register the link on-chain.{% endblock preheader %}
+{% block title %}Confirm Your Wallet{% endblock title %}
 {% block subtitle %}One click to link your Solana wallet on-chain{% endblock subtitle %}
+
+{% block extra_styles %}
+        .wallet-chip {
+            background-color: #f4f2fe;
+            border: 1px solid #e5ddff;
+            border-radius: 8px;
+        }
+        .wallet-chip td {
+            padding: 14px 16px;
+            font-size: 13px;
+            color: #4c3daf;
+            word-break: break-all;
+            font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+        }
+        .wallet-chip .chip-label {
+            display: block;
+            margin-bottom: 4px;
+            font-family: 'TikTok Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            color: #7b63f1;
+        }
+{% endblock extra_styles %}
 
 {% block content %}
                 <p>Hello{% if name %} <strong>{{ name }}</strong>{% endif %},</p>
@@ -11,21 +38,25 @@
                     account. To finish, confirm that this wallet is yours — we'll then
                     register the link on-chain so you can settle trades from it.
                 </p>
-                <div class="link-fallback" style="word-break: break-all;">
-                    <strong>Wallet:</strong> {{ wallet_address }}
-                </div>
-                <p style="text-align: center; margin: 32px 0;">
-                    <a href="{{ confirmation_url }}" class="btn">✓ Confirm My Wallet</a>
-                </p>
-                <p class="muted" style="text-align: center;">
+
+                <table role="presentation" class="wallet-chip" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f4f2fe" style="margin-bottom: 28px;">
+                    <tr>
+                        <td>
+                            <span class="chip-label">Wallet address</span>
+                            {{ wallet_address }}
+                        </td>
+                    </tr>
+                </table>
+
+                {{ ui::button(url=confirmation_url, label="✓ Confirm My Wallet") }}
+                <p class="muted" style="text-align: center; margin-top: -12px;">
                     This link expires in 30 minutes.
                 </p>
-                <div class="divider"></div>
-                <p class="muted">
-                    If the button doesn't work, copy and paste this link into your browser:
-                </p>
-                <div class="link-fallback"><a href="{{ confirmation_url }}" style="color: #059669; text-decoration: none;">{{ confirmation_url }}</a></div>
-                <p class="muted" style="margin-top: 24px;">
+
+                <div class="divider" style="margin: 24px 0;">&nbsp;</div>
+                {{ ui::link_fallback(url=confirmation_url) }}
+
+                <p class="muted" style="margin-top: 24px; margin-bottom: 0;">
                     If you didn't request this, ignore this email — the wallet stays unlinked
                     and is never registered on-chain.
                 </p>
