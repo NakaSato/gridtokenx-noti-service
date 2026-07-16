@@ -25,6 +25,7 @@ tracing.workspace = true
 jsonwebtoken.workspace = true
 gridtokenx-blockchain-core.workspace = true
 utoipa.workspace = true
+metrics.workspace = true
 
 [dev-dependencies]
 # Drive the Axum router in-process (ServiceExt::oneshot) for handler wiring tests.

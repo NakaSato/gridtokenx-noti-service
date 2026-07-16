@@ -12,7 +12,7 @@ use std::time::Instant;
 use axum::extract::{MatchedPath, Request};
 use axum::middleware::Next;
 use axum::response::Response;
-use metrics::{counter, gauge, histogram};
+use metrics::{counter, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
 /// Process-global Prometheus handle. Set once by [`install_recorder`]; read by
@@ -81,10 +81,4 @@ pub fn record_kafka_message(topic: &str) {
 /// Records one Kafka record that failed handling, by topic.
 pub fn record_kafka_error(topic: &str) {
     counter!("noti_kafka_consume_errors_total", "topic" => topic.to_owned()).increment(1);
-}
-
-/// Sets the current count of live WebSocket connections.
-pub fn set_websocket_connections(count: u64) {
-    #[allow(clippy::cast_precision_loss)]
-    gauge!("noti_websocket_active_connections").set(count as f64);
 }

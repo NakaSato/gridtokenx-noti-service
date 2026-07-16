@@ -82,7 +82,21 @@ impl ConnectionManager {
             "🌐 Added WS connection {} for user {}",
             connection_id, user_id
         );
+        self.update_connection_gauge();
         connection_id
+    }
+
+    /// Total live connections across all users.
+    #[must_use]
+    pub fn total_connections(&self) -> usize {
+        self.connections.iter().map(|e| e.value().len()).sum()
+    }
+
+    /// Publish the live-connection count to the process metrics recorder
+    /// (no-op when none is installed, e.g. in unit tests).
+    fn update_connection_gauge(&self) {
+        #[allow(clippy::cast_precision_loss)]
+        metrics::gauge!("noti_websocket_active_connections").set(self.total_connections() as f64);
     }
 
     pub fn remove_connection(&self, user_id: &Uuid, connection_id: &Uuid) {
@@ -102,6 +116,7 @@ impl ConnectionManager {
             "🌐 Removed WS connection {} for user {}",
             connection_id, user_id
         );
+        self.update_connection_gauge();
     }
 }
 
@@ -195,5 +210,28 @@ mod tests {
         assert_eq!(rx2.recv().await.as_deref(), Some("again"));
 
         Ok(())
+    }
+
+    /// `total_connections` (the value the ws-connection gauge publishes) tracks
+    /// adds and removes across users.
+    #[tokio::test]
+    async fn total_connections_tracks_adds_and_removes() {
+        let manager = ConnectionManager::new();
+        let (alice, bob) = (Uuid::new_v4(), Uuid::new_v4());
+        assert_eq!(manager.total_connections(), 0);
+
+        let (tx1, _rx1) = mpsc::channel::<String>(1);
+        let (tx2, _rx2) = mpsc::channel::<String>(1);
+        let (tx3, _rx3) = mpsc::channel::<String>(1);
+        let a1 = manager.add_connection(alice, tx1);
+        manager.add_connection(alice, tx2);
+        let b1 = manager.add_connection(bob, tx3);
+        assert_eq!(manager.total_connections(), 3);
+
+        manager.remove_connection(&alice, &a1);
+        assert_eq!(manager.total_connections(), 2);
+
+        manager.remove_connection(&bob, &b1);
+        assert_eq!(manager.total_connections(), 1, "bob's map removed when empty");
     }
 }
