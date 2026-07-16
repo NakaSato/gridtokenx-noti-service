@@ -37,6 +37,7 @@ impl MsgCtx {
     /// (topic recreation / cluster rebuild resets offsets), which silently
     /// dedup-dropped fresh notifications against stale rows. Falls back to the
     /// `kafka:` coordinate form only when the envelope carried no id.
+    #[must_use]
     pub fn idem(&self, label: &str) -> String {
         match &self.event_id {
             Some(id) => format!("{label}:{id}"),
