@@ -3,7 +3,9 @@
 //! Every adapter is mocked (mockall). These exercise the branching in
 //! `orchestrator::dispatch`: success → `Sent`, transient failure → retry
 //! scheduled, exhausted retries → `PermanentFailure`, template failure →
-//! `PermanentFailure`, terminal status → no-op, and missing record → error.
+//! `PermanentFailure`, terminal status → no-op, missing record → error, repo
+//! errors propagated, and the in-process retry fallback (paused-clock tests)
+//! when MQ is absent or `publish_retry` fails.
 
 use std::sync::{Arc, Mutex};
 
@@ -203,4 +205,104 @@ async fn dispatch_missing_notification_errors() {
         matches!(result, Err(NotiError::NotFound(_))),
         "missing notification should be NotFound, got {result:?}"
     );
+}
+
+#[tokio::test]
+async fn dispatch_propagates_repo_error_from_get_by_id() {
+    let id = Uuid::new_v4();
+    let mut repo = MockNotificationRepositoryTrait::new();
+    repo.expect_get_by_id()
+        .times(1)
+        .returning(|_| Err(NotiError::Database("connection reset".to_string())));
+
+    let orch = orchestrator(repo, ok_template(), MockNotificationProviderTrait::new(), None);
+    let result = Arc::clone(&orch).dispatch(id).await;
+
+    assert!(
+        matches!(result, Err(NotiError::Database(_))),
+        "repo error must propagate, got {result:?}"
+    );
+}
+
+// --- In-process retry fallback (`spawn_in_process_retry`) ------------------
+//
+// The retry sleep is minutes long, so these run under tokio's paused clock
+// (`start_paused = true`): virtual time auto-advances while all tasks are
+// idle, letting the 120s backoff elapse instantly.
+
+/// Provider whose first send fails (transient) and second succeeds — the
+/// shape of an outage that recovers before the retry fires.
+fn fails_once_provider() -> MockNotificationProviderTrait {
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let mut provider = MockNotificationProviderTrait::new();
+    provider.expect_send().times(2).returning(move |_, _| {
+        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            Err(NotiError::Internal("smtp down".to_string()))
+        } else {
+            Ok("provider-ref-after-retry".to_string())
+        }
+    });
+    provider.expect_provider_id().times(..).returning(|| "mock");
+    provider
+}
+
+/// Await the spawned retry re-dispatch writing `Sent` (bounded by virtual time).
+#[allow(clippy::duration_suboptimal_units)] // 600 virtual seconds, not a readability unit
+async fn wait_for_sent(statuses: &Arc<Mutex<Vec<NotificationStatus>>>) {
+    tokio::time::timeout(std::time::Duration::from_secs(600), async {
+        loop {
+            if statuses
+                .lock()
+                .expect("status sink lock")
+                .contains(&NotificationStatus::Sent)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("in-process retry never re-dispatched to Sent");
+}
+
+/// MQ present but `publish_retry` fails (broker died between dispatch and
+/// retry scheduling) → must fall back to the in-process timer, which
+/// re-dispatches and reaches `Sent`.
+#[tokio::test(start_paused = true)]
+async fn publish_retry_failure_falls_back_to_in_process_retry() {
+    let id = Uuid::new_v4();
+    let (mut repo, statuses) =
+        recording_repo(email_notification(id, NotificationStatus::Pending, 0));
+    repo.expect_increment_retry().times(1).returning(|_, _| Ok(()));
+
+    let mut mq = MockMessageQueueTrait::new();
+    mq.expect_publish_retry()
+        .times(1)
+        .returning(|_, _| Err(NotiError::Internal("broker down".to_string())));
+
+    let orch = orchestrator(repo, ok_template(), fails_once_provider(), Some(mq));
+    Arc::clone(&orch)
+        .dispatch(id)
+        .await
+        .expect("transient failure with retry fallback is Ok");
+
+    wait_for_sent(&statuses).await;
+}
+
+/// No MQ at all → the transient-failure path must schedule the in-process
+/// timer directly and still deliver on the retry.
+#[tokio::test(start_paused = true)]
+async fn mq_absent_transient_failure_retries_in_process() {
+    let id = Uuid::new_v4();
+    let (mut repo, statuses) =
+        recording_repo(email_notification(id, NotificationStatus::Pending, 0));
+    repo.expect_increment_retry().times(1).returning(|_, _| Ok(()));
+
+    let orch = orchestrator(repo, ok_template(), fails_once_provider(), None);
+    Arc::clone(&orch)
+        .dispatch(id)
+        .await
+        .expect("transient failure without MQ is Ok");
+
+    wait_for_sent(&statuses).await;
 }

@@ -12,6 +12,33 @@ pub struct SmtpProvider {
     from_email: String,
 }
 
+/// Effective transport security, resolved from config + port convention.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum TlsMode {
+    /// Implicit TLS from the first byte (SMTPS, conventionally port 465).
+    Tls,
+    /// Plaintext connect upgraded via STARTTLS (the default).
+    StartTls,
+    /// No TLS at all — local testing only (e.g. Mailpit).
+    None,
+}
+
+/// Resolve the configured `SMTP_TLS_MODE` string: unset falls back on the port
+/// convention (465 → implicit TLS, anything else → STARTTLS); an unrecognized
+/// value degrades to STARTTLS (never to plaintext) with an error log.
+fn resolve_tls_mode(tls_mode: Option<&str>, port: u16) -> TlsMode {
+    let mode = tls_mode.unwrap_or(if port == 465 { "tls" } else { "starttls" });
+    match mode {
+        "tls" => TlsMode::Tls,
+        "starttls" => TlsMode::StartTls,
+        "none" | "insecure" => TlsMode::None,
+        _ => {
+            error!("Unknown SMTP TLS mode: {mode}, falling back to starttls");
+            TlsMode::StartTls
+        }
+    }
+}
+
 impl SmtpProvider {
     /// # Errors
     ///
@@ -25,30 +52,21 @@ impl SmtpProvider {
         from_email: String,
         tls_mode: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let effective_mode = tls_mode.unwrap_or(if port == 465 { "tls" } else { "starttls" });
+        let effective_mode = resolve_tls_mode(tls_mode, port);
 
         let mut builder = match effective_mode {
-            "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(host)
+            TlsMode::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(host)
                 .map_err(|e| anyhow::anyhow!("Invalid SMTP TLS relay host '{host}': {e}"))?,
-            "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+            TlsMode::StartTls => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
                 .map_err(|e| anyhow::anyhow!("Invalid SMTP STARTTLS relay host '{host}': {e}"))?,
-            "none" | "insecure" => {
+            TlsMode::None => {
                 // No TLS - suitable for local testing with Mailpit
                 AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host).port(port)
             }
-            _ => {
-                error!(
-                    "Unknown SMTP TLS mode: {}, falling back to starttls",
-                    effective_mode
-                );
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).map_err(|e| {
-                    anyhow::anyhow!("Invalid SMTP STARTTLS relay host '{host}': {e}")
-                })?
-            }
         };
 
-        // For "none" mode, builder already has port set; for others, set port after TLS setup
-        if effective_mode != "none" && effective_mode != "insecure" {
+        // For `None` mode, builder already has port set; for others, set port after TLS setup
+        if effective_mode != TlsMode::None {
             builder = builder.port(port);
         }
 
@@ -222,7 +240,7 @@ mod tests {
     //!   2. `extract_subject` — collapses ALL whitespace (incl. CR/LF), so a
     //!      crafted `<title>` cannot inject extra headers via newlines.
 
-    use super::{extract_subject, looks_like_html};
+    use super::{SmtpProvider, TlsMode, extract_subject, looks_like_html, resolve_tls_mode};
 
     // --- Mechanism 1: plain text is never treated as HTML ------------------
 
@@ -291,5 +309,55 @@ mod tests {
         // Whitespace-only title collapses to empty → None, so the caller falls
         // back to the fixed default subject rather than an empty header.
         assert!(extract_subject("<html><title>   \r\n  </title></html>").is_none());
+    }
+
+    // --- TLS mode resolution (`SMTP_TLS_MODE` + port convention) -----------
+
+    #[test]
+    fn tls_mode_unset_infers_implicit_tls_on_port_465() {
+        assert_eq!(resolve_tls_mode(None, 465), TlsMode::Tls);
+    }
+
+    #[test]
+    fn tls_mode_unset_defaults_to_starttls_on_other_ports() {
+        assert_eq!(resolve_tls_mode(None, 587), TlsMode::StartTls);
+        assert_eq!(resolve_tls_mode(None, 25), TlsMode::StartTls);
+        assert_eq!(resolve_tls_mode(None, 2525), TlsMode::StartTls);
+    }
+
+    #[test]
+    fn tls_mode_explicit_setting_overrides_port_convention() {
+        // Explicit mode wins even on port 465 / the STARTTLS ports.
+        assert_eq!(resolve_tls_mode(Some("starttls"), 465), TlsMode::StartTls);
+        assert_eq!(resolve_tls_mode(Some("tls"), 587), TlsMode::Tls);
+        assert_eq!(resolve_tls_mode(Some("none"), 465), TlsMode::None);
+        assert_eq!(resolve_tls_mode(Some("insecure"), 587), TlsMode::None);
+    }
+
+    #[test]
+    fn tls_mode_unknown_value_degrades_to_starttls_never_plaintext() {
+        assert_eq!(resolve_tls_mode(Some("tsl"), 587), TlsMode::StartTls);
+        assert_eq!(resolve_tls_mode(Some(""), 465), TlsMode::StartTls);
+    }
+
+    #[test]
+    fn new_builds_a_transport_for_every_resolved_mode() {
+        // Host validation happens at connect time, not build time, so `new`
+        // must succeed for every mode; this pins that each resolved branch
+        // reaches a working builder (port + credentials wiring included).
+        for (port, mode) in [(465, None), (587, None), (25, Some("none")), (587, Some("bogus"))] {
+            assert!(
+                SmtpProvider::new(
+                    "smtp.example.test",
+                    port,
+                    Some("user".to_string()),
+                    Some("pass".to_string()),
+                    "from@x.test".to_string(),
+                    mode,
+                )
+                .is_ok(),
+                "SmtpProvider::new failed for port {port} mode {mode:?}"
+            );
+        }
     }
 }

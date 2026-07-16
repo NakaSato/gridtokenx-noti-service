@@ -1266,6 +1266,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn user_onboarded_queues_websocket_to_owner() {
+        let (orch, sink) = test_orchestrator();
+        let owner = Uuid::new_v4();
+        let data = serde_json::json!({
+            "user_id": owner.to_string(),
+            "user_account_pda": "Pda111",
+            "transaction_signature": "sig-onboard"
+        });
+
+        dispatch(&orch, None, &ctx(), "UserOnboarded", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1, "one WS notification to the owner");
+        let n = &queued[0];
+        assert_eq!(n.user_id, Some(owner));
+        assert!(matches!(n.channel, NotificationChannel::WebSocket));
+        assert_eq!(n.recipient, owner.to_string());
+        assert_eq!(n.template_id, "user_onboarded.txt.tera");
+        assert_eq!(n.variables["user_account_pda"], "Pda111");
+        assert_eq!(n.variables["transaction_signature"], "sig-onboard");
+        assert_eq!(n.idempotency_key.as_deref(), Some("onboard:evt-abc"));
+    }
+
+    #[tokio::test]
+    async fn user_onboarded_skips_without_user_uuid() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "user_account_pda": "Pda111",
+            "transaction_signature": "sig-onboard"
+        });
+
+        dispatch(&orch, None, &ctx(), "UserOnboarded", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn meter_onboarded_queues_websocket_to_owner() {
+        let (orch, sink) = test_orchestrator();
+        let owner = Uuid::new_v4();
+        let data = serde_json::json!({
+            "user_id": owner.to_string(),
+            "meter_id": "m-1",
+            "meter_type": "smart",
+            "transaction_signature": "sig-meter"
+        });
+
+        dispatch(&orch, None, &ctx(), "MeterOnboarded", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1, "one WS notification to the owner");
+        let n = &queued[0];
+        assert_eq!(n.user_id, Some(owner));
+        assert!(matches!(n.channel, NotificationChannel::WebSocket));
+        assert_eq!(n.recipient, owner.to_string());
+        assert_eq!(n.template_id, "meter_onboarded.txt.tera");
+        assert_eq!(n.variables["meter_id"], "m-1");
+        assert_eq!(n.variables["meter_type"], "smart");
+        assert_eq!(n.variables["transaction_signature"], "sig-meter");
+        assert_eq!(n.idempotency_key.as_deref(), Some("meter:evt-abc"));
+    }
+
+    #[tokio::test]
     async fn meter_onboarded_skips_without_user_uuid() {
         let (orch, sink) = test_orchestrator();
         let data = serde_json::json!({ "meter_id": "m-1", "meter_type": "smart" });
