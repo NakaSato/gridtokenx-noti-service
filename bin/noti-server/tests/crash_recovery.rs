@@ -75,7 +75,12 @@ impl NotificationProviderTrait for CapturingEmailProvider {
 }
 
 
-/// A minimal `Email` notification, `Pending`, due now.
+/// A minimal `Email` notification, `Pending`, due one hour ago.
+///
+/// `next_retry_at` is written from this process's clock but compared against
+/// the Postgres container's `NOW()` in `get_pending_for_retry`; a sub-second
+/// host-ahead skew (`OrbStack` VM clock drift) made a "due now" row invisible to
+/// the sweep and flaked this test. An hour in the past dwarfs any real skew.
 fn sample(id: Uuid) -> Notification {
     let now = gridtokenx_telemetry::time::now();
     Notification {
@@ -89,7 +94,7 @@ fn sample(id: Uuid) -> Notification {
         provider_id: None,
         provider_ref: None,
         retry_count: 0,
-        next_retry_at: now,
+        next_retry_at: now - Duration::from_secs(3600),
         error_message: None,
         idempotency_key: None,
         created_at: now,
@@ -185,7 +190,7 @@ async fn recover_pending_redispatches_crash_stranded_rows_to_sent() {
         .expect("strand row in Processing");
 
     // Row B: a queued delivery the crashed process never picked up → `Pending`,
-    // due now (`next_retry_at` is creation time, already past by sweep time).
+    // past-due (`next_retry_at` an hour before creation).
     let due = Uuid::new_v4();
     repo.create(&sample(due)).await.expect("create due row");
 

@@ -139,6 +139,29 @@ async fn repository_lifecycle() {
     let pending = repo.get_pending_for_retry(10).await.expect("pending");
     assert!(pending.iter().any(|p| p.id == due), "due row must be pending");
 
+    // Clock-skew tolerance: a row stamped slightly in the future by a
+    // service clock ahead of the DB clock must still be visible to the
+    // sweep (5s tolerance), while a genuinely future retry must not be.
+    let skewed = Uuid::new_v4();
+    let mut n = sample(skewed, None, None);
+    n.next_retry_at = Utc::now() + Duration::seconds(3);
+    repo.create(&n).await.expect("create skewed");
+
+    let future = Uuid::new_v4();
+    let mut n = sample(future, None, None);
+    n.next_retry_at = Utc::now() + Duration::hours(1);
+    repo.create(&n).await.expect("create future");
+
+    let pending = repo.get_pending_for_retry(10).await.expect("pending");
+    assert!(
+        pending.iter().any(|p| p.id == skewed),
+        "row within skew tolerance must be swept"
+    );
+    assert!(
+        !pending.iter().any(|p| p.id == future),
+        "genuinely future retry must not be swept"
+    );
+
     repo.update_status(due, NotificationStatus::Processing, None, None)
         .await
         .expect("to processing");

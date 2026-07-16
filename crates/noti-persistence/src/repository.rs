@@ -293,6 +293,12 @@ impl NotificationRepositoryTrait for NotificationRepository {
     }
 
     async fn get_pending_for_retry(&self, limit: i32) -> Result<Vec<Notification>> {
+        // `next_retry_at` is written from the *service's* (NTP-corrected) clock
+        // while NOW() is the *database's* clock. A service clock a few hundred
+        // ms ahead would make a freshly queued row invisible to the boot
+        // recovery sweep until the skew elapsed. The 5s tolerance absorbs any
+        // realistic skew; worst case a retry fires 5s early, which is harmless
+        // against minutes-scale backoff.
         let res = sqlx::query_as::<_, NotificationRow>(
             r"
             SELECT
@@ -300,7 +306,7 @@ impl NotificationRepositoryTrait for NotificationRepository {
                 provider_id, provider_ref, retry_count, next_retry_at, error_message,
                 idempotency_key, created_at, updated_at, sent_at, read_at
             FROM notifications
-            WHERE status = 'pending' AND next_retry_at <= NOW()
+            WHERE status = 'pending' AND next_retry_at <= NOW() + interval '5 seconds'
             LIMIT $1
             ",
         )
