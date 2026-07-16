@@ -46,6 +46,11 @@ const RECOVERY_BATCH: i32 = 1000;
 /// bind their ports.
 #[allow(clippy::too_many_lines)]
 pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
+    // Idempotent re-install: main() already did this as early as possible, but
+    // callers that drive run() directly (integration tests) rely on it here so
+    // the /metrics route below is never wired against a no-op recorder.
+    crate::metrics::install_recorder();
+
     // -----------------------------------------------------------------------
     // 1. Infrastructure (Persistence & Messaging)
     // -----------------------------------------------------------------------
@@ -386,7 +391,7 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
     let grpc_addr: std::net::SocketAddr = format!("0.0.0.0:{grpc_port}").parse()?;
 
     let run_token = token.clone();
-    let tcp_handle = tokio::spawn(async move {
+    let mut tcp_handle = tokio::spawn(async move {
         // HTTP Server
         let http_listener = match tokio::net::TcpListener::bind(http_addr).await {
             Ok(l) => l,
@@ -434,18 +439,28 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
             }
         });
 
-        tokio::select! {
-            res = http_srv => { let _ = res; info!("HTTP server stopped"); }
-            res = grpc_srv => { let _ = res; info!("gRPC server stopped"); }
-        }
+        // Both servers exit on their own once the token cancels and their
+        // in-flight requests drain (`with_graceful_shutdown`).
+        let _ = http_srv.await;
+        info!("HTTP server stopped");
+        let _ = grpc_srv.await;
+        info!("gRPC server stopped");
     });
 
     // Wait for shutdown
     token.cancelled().await;
     info!("Service cancellation received");
 
-    // Cleanup
-    tcp_handle.abort();
+    // Graceful drain: the servers watch the same token, so wait for them to
+    // finish their in-flight requests rather than aborting them mid-response.
+    // A deadline caps how long a hung request can stall shutdown.
+    if tokio::time::timeout(std::time::Duration::from_secs(30), &mut tcp_handle)
+        .await
+        .is_err()
+    {
+        error!("Servers did not drain within 30s; aborting");
+        tcp_handle.abort();
+    }
 
     Ok(())
 }

@@ -16,8 +16,10 @@
 //!   2. confirms `/health/ready` is `200` (consumer-health wiring + the
 //!      disabled-Kafka readiness path),
 //!   3. TCP-connects the gRPC port to prove the second server bound too,
-//!   4. cancels the token and asserts `run` returns `Ok(())` and the HTTP port
-//!      stops accepting — i.e. graceful shutdown actually tears the servers down.
+//!   4. cancels the token while a request's body is still arriving and asserts
+//!      that request completes with `200` (graceful shutdown *drains* in-flight
+//!      work), `run` returns `Ok(())`, and the HTTP port stops accepting —
+//!      i.e. shutdown tears the servers down without dropping live requests.
 //!
 //! Requires a Docker/OrbStack daemon — panics (does not skip) without one.
 
@@ -26,6 +28,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -59,6 +62,7 @@ fn test_config(
     Config {
         port,
         database_url,
+        migration_database_url: None,
         kafka_brokers: String::new(), // empty → consumer disabled (ready still OK)
         rabbitmq_url,
         redis_url,
@@ -87,6 +91,7 @@ fn test_config(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)] // one linear e2e narrative; splitting hides the ordering
 async fn run_boots_serves_health_then_shuts_down_cleanly() {
     // `startup::run` loads templates from the cwd-relative `./templates`. Under
     // `cargo test` the cwd is the crate dir (`bin/noti-server`); point it at the
@@ -158,8 +163,85 @@ async fn run_boots_serves_health_then_shuts_down_cleanly() {
         .await
         .expect("gRPC port must be accepting connections");
 
-    // ---- Graceful shutdown -----------------------------------------------
+    // 4. /metrics serves Prometheus text and the HTTP middleware recorded the
+    //    /health requests made above — proving the recorder was installed and
+    //    `track_http` is in the middleware stack, labelled by route template.
+    let metrics_url = format!("http://127.0.0.1:{http_port}/metrics");
+    let metrics_body = client
+        .get(&metrics_url)
+        .send()
+        .await
+        .expect("metrics request")
+        .text()
+        .await
+        .expect("metrics body");
+    assert!(
+        metrics_body.contains("http_requests_total"),
+        "/metrics must expose http_requests_total after traffic, got:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("path=\"/health\""),
+        "http_requests_total must be labelled with the matched route template"
+    );
+
+    // ---- Graceful shutdown with an in-flight request -----------------------
+    // Drain proof: a request whose body is still arriving when shutdown begins
+    // must be answered (200), not reset. Send the headers + half the JSON body,
+    // cancel the token mid-request, then send the rest and read the response.
+    let body = r#"{"token":"drain-proof-token","platform":"web"}"#;
+    let request_head = format!(
+        "POST /api/v1/noti/devices HTTP/1.1\r\n\
+         Host: 127.0.0.1\r\n\
+         x-gridtokenx-user-id: {}\r\n\
+         x-gridtokenx-role: admin\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        uuid::Uuid::new_v4(),
+        body.len()
+    );
+    let (body_head, body_tail) = body.split_at(body.len() / 2);
+
+    let mut inflight = tokio::net::TcpStream::connect(("127.0.0.1", http_port))
+        .await
+        .expect("connect in-flight request");
+    inflight
+        .write_all(format!("{request_head}{body_head}").as_bytes())
+        .await
+        .expect("write partial request");
+    inflight.flush().await.expect("flush partial request");
+
+    // The server must NOT have answered yet — the handler is awaiting the rest
+    // of the body. An early response here means the request was rejected
+    // before the body (wrong route/headers) and the drain assertion below
+    // would test nothing.
+    let mut peek = [0u8; 512];
+    let early = tokio::time::timeout(Duration::from_millis(300), inflight.read(&mut peek)).await;
+    assert!(
+        early.is_err(),
+        "server answered before the body finished: {:?}",
+        early.map(|r| r.map(|n| String::from_utf8_lossy(&peek[..n]).into_owned()))
+    );
+
     token.cancel();
+    // Let shutdown begin (listener stops accepting) while our request hangs
+    // mid-body.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    inflight
+        .write_all(body_tail.as_bytes())
+        .await
+        .expect("write body tail after cancel");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), inflight.read_to_end(&mut response))
+        .await
+        .expect("in-flight response not drained within 10s")
+        .expect("read in-flight response");
+    let response = String::from_utf8_lossy(&response);
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "in-flight request must complete with 200 during graceful shutdown, got:\n{response}"
+    );
 
     // `run` returns only after cancellation; it must return Ok(()).
     let run_result = tokio::time::timeout(Duration::from_secs(15), run_handle)
