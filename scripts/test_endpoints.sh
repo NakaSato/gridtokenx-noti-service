@@ -93,12 +93,12 @@ SEND_DATA='{
   "idempotency_key": "test-key-'$(date +%s)'"
 }'
 
-echo -e "${BLUE}▶ POST $GRPC_URL/noti.NotificationService/SendNotification${NC}"
+echo -e "${BLUE}▶ POST $GRPC_URL/noti.v1.NotificationService/SendNotification${NC}"
 echo "Request Body: $SEND_DATA"
 RESPONSE=$(curl -s -X POST \
   -H "Content-Type: application/json" \
   -d "$SEND_DATA" \
-  "$GRPC_URL/noti.NotificationService/SendNotification")
+  "$GRPC_URL/noti.v1.NotificationService/SendNotification")
 
 echo "Response Body: $RESPONSE"
 
@@ -111,7 +111,7 @@ if [ -n "$NOTI_ID" ]; then
     STATUS_DATA='{
       "notificationId": "'"$NOTI_ID"'"
     }'
-    test_endpoint "POST" "$GRPC_URL/noti.NotificationService/GetNotificationStatus" 200 "-H 'Content-Type: application/json'" "$STATUS_DATA"
+    test_endpoint "POST" "$GRPC_URL/noti.v1.NotificationService/GetNotificationStatus" 200 "-H 'Content-Type: application/json'" "$STATUS_DATA"
 else
     echo -e "${RED}✘ SendNotification FAILED${NC}"
     exit 1

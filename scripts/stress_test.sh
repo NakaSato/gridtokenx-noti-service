@@ -32,7 +32,7 @@ USER_ID=${USER_ID:-"00000000-0000-0000-0000-000000000001"}
 RECIPIENT=${RECIPIENT:-"stress@gridtokenx.com"}
 
 GRPC_URL="http://localhost:${GRPC_PORT}"
-ENDPOINT="${GRPC_URL}/noti.NotificationService/SendNotification"
+ENDPOINT="${GRPC_URL}/noti.v1.NotificationService/SendNotification"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; BLUE='\033[0;34m'; YELLOW='\033[0;33m'; NC='\033[0m'
 

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package noti;
+package noti.v1;
 
 import "google/protobuf/struct.proto";
 
