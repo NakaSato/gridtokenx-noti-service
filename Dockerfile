@@ -21,12 +21,19 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Builder
 # -----------------------------------------------------------------------------
-FROM rust:1.89-bookworm AS builder
+FROM rust:1.91-bookworm AS builder
 
 # Build toolchain: cmake/clang for librdkafka + zstd (vendored), protobuf for the
 # noti-protocol codegen, libssl-dev for the Solana SDK's openssl-sys link.
 # busybox-static ships into the runtime image for the healthcheck.
-RUN <<EOT
+# apt archives live in BuildKit caches shared with the sibling service images, so
+# the .debs are downloaded once rather than per-image whenever this layer
+# invalidates. docker-clean must go, or apt deletes what we are caching.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<EOT
+    set -eux
+    rm -f /etc/apt/apt.conf.d/docker-clean
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
     apt-get update
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -38,7 +45,6 @@ RUN <<EOT
         protobuf-compiler \
         libprotobuf-dev \
         busybox-static
-    rm -rf /var/lib/apt/lists/*
 EOT
 
 WORKDIR /app
