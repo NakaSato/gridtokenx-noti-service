@@ -93,6 +93,10 @@ pub struct Config {
     /// `EventBus` topic `{KAFKA_TOPIC_PREFIX}.triggers` (default prefix `trading`).
     #[serde(default = "default_kafka_trading_triggers")]
     pub kafka_topic_trading_triggers: String,
+    /// Meter-service registry topic (`MeterRegistered` / `MeterUpdated`).
+    /// Matches meter-service's `METER_EVENTS_TOPIC` (default `meter_events`).
+    #[serde(default = "default_kafka_meter_events")]
+    pub kafka_topic_meter_events: String,
 }
 
 fn default_kafka_user_events() -> String {
@@ -105,6 +109,10 @@ fn default_kafka_audit_events() -> String {
 
 fn default_kafka_trading_triggers() -> String {
     "trading.triggers".to_string()
+}
+
+fn default_kafka_meter_events() -> String {
+    "meter_events".to_string()
 }
 
 impl Config {

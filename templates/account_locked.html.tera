@@ -1,0 +1,34 @@
+{% extends "base.html.tera" %}
+{% import "_components.html.tera" as ui %}
+
+{% block subject %}Your GridTokenX account is temporarily locked{% endblock subject %}
+{% block preheader %}Too many failed sign-in attempts — your account is locked for a short period.{% endblock preheader %}
+{% block title %}Account Temporarily Locked{% endblock title %}
+{% block subtitle %}GridTokenX Account Security{% endblock subtitle %}
+
+{# Warning-amber accent, same token as password reset — a security action. #}
+{% block header_bg %}#d97706{% endblock header_bg %}
+{% block header_gradient %}linear-gradient(135deg, #f1c40f 0%, #d97706 100%){% endblock header_gradient %}
+
+{% block content %}
+                <p>Hello,</p>
+                <p>
+                    Your <strong>GridTokenX</strong> account
+                    (<strong>{{ identifier }}</strong>) has been temporarily locked
+                    after too many failed sign-in attempts.
+                </p>
+
+                <div class="box box-warn" style="margin-top: 8px;">
+                    <p>
+                        You can sign in again in about
+                        <strong>{{ lockout_minutes }} minute(s)</strong>.
+                        No further action is needed if this was you.
+                    </p>
+                </div>
+
+                <p style="margin-top: 24px;">
+                    If this was <strong>not</strong> you, someone may be trying to
+                    access your account. Reset your password as soon as the lock
+                    expires, and contact support if the attempts continue.
+                </p>
+{% endblock content %}

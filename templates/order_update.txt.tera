@@ -1,0 +1,3 @@
+Order {{ status }}: {{ filled_amount }} kWh filled.
+
+Order ID: {{ order_id }}

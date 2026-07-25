@@ -68,7 +68,7 @@ graph TD
 * **Template Engine:** Dynamically renders email and alert bodies using [Tera](https://tera.netlify.app/) (Jinja2-like templates) with HTML autoescaping.
 * **Robust Retry Strategy:** RabbitMQ Dead-Letter Exchange (DLX) with message TTL for exponential backoff (2^n × 60s, max 5 retries) without blocking worker threads. RabbitMQ is **required** — the durable retry queue is mandatory, so startup fails fast on an empty `RABBITMQ_URL`.
 * **Crash Recovery:** Boot-time sweep resets rows stuck in `Processing` back to `Pending`, then re-dispatches all currently-due `Pending` rows — no notifications lost across restarts.
-* **Event-Driven Intake:** Background Kafka consumer listens to platform events (`UserRegistered`, `OrderMatched`, `SettlementProcessed`, `ErcIssued`, `VppDispatched`, `PasswordResetRequested`, `VerificationEmailRequested`, `UserOnboarded`, `MeterOnboarded`, `UserWalletLinked`) to trigger automatic notifications.
+* **Event-Driven Intake:** Background Kafka consumer listens to platform events (`UserRegistered`, `OrderMatched`, `SettlementProcessed`, `ErcIssued`, `VppDispatched`, `PasswordResetRequested`, `VerificationEmailRequested`, `UserOnboarded`, `MeterOnboarded`, `UserWalletLinked`, `UserWalletUnlinked`, `UserWalletPrimaryChanged`, `AccountLocked`, `UserLoggedIn`, `OrderCreated`, `OrderUpdate`, `MeterRegistered`, `WalletLinkRequested`) to trigger automatic notifications.
 * **URL Rewriting:** Email callback links are automatically rewritten from internal addresses (`localhost:4001`) to the configured frontend URL, preserving path and query parameters.
 * **Real-time Push (WebSockets):** Decoupled `ConnectionManager` (DashMap-based) with JWT-authenticated WebSocket sessions.
 * **Dual PostgreSQL Pools:** Separate high-priority (writes) and low-priority (reads) connection pools for query routing.
@@ -118,6 +118,7 @@ The service loads settings from environment variables or YAML configuration file
 | `KAFKA_BROKERS` | *Optional* | Comma-separated Kafka brokers. If empty → no Kafka consumer |
 | `KAFKA_TOPIC_USER_EVENTS` | `iam.user.events` | Kafka topic for user events |
 | `KAFKA_TOPIC_AUDIT_EVENTS` | `iam.audit.events` | Kafka topic for audit events |
+| `KAFKA_TOPIC_METER_EVENTS` | `meter_events` | Meter-service registry topic (`MeterRegistered`) |
 | `RABBITMQ_URL` | *Required* | RabbitMQ connection string. Durable retry queue is mandatory — startup fails if empty |
 | `JWT_SECRET` | *Required* | JWT secret for WebSocket authentication |
 | `SMTP_HOST` | *Optional* | SMTP server host. If empty → mock email provider |
@@ -204,3 +205,11 @@ docker run --rm -p 8080:8080 -p 8090:8090 --env-file .env \
 | `MeterOnboarded` | WebSocket | `meter_onboarded.txt.tera` | Smart meter registration confirmation |
 | `PriceAlertTriggered` | WebSocket + Push | `price_alert_triggered.txt.tera`, `push_notification.txt.tera` | Price-alert firing to the alert owner |
 | `UserWalletLinked` | WebSocket + Push | `security_alert.txt.tera`, `push_notification.txt.tera` | Security alert for wallet linking (push so owner sees it off-session) |
+| `UserWalletUnlinked` | WebSocket + Push | `security_alert.txt.tera`, `push_notification.txt.tera` | Security alert when a wallet is removed from the account |
+| `UserWalletPrimaryChanged` | WebSocket + Push | `security_alert.txt.tera`, `push_notification.txt.tera` | Security alert when the settlement (primary) wallet changes |
+| `AccountLocked` | Email | `account_locked.html.tera` | Lockout notice after repeated failed sign-ins (email only when the login identifier is an address) |
+| `UserLoggedIn` | WebSocket + Push | `new_login.txt.tera`, `push_notification.txt.tera` | Sign-in from an IP not seen for this user in 90 days (repeat IPs stay silent) |
+| `OrderCreated` | WebSocket | `order_created.txt.tera` | Order-placed acknowledgement (no push — the user is in the app) |
+| `OrderUpdate` | WebSocket (+ Push on terminal states) | `order_update.txt.tera`, `push_notification.txt.tera` | Fill / cancel / expiry; `partially_filled` is WebSocket-only to avoid per-cycle push spam |
+| `MeterRegistered` / `MeterUpdated` | WebSocket | `meter_registered.txt.tera` | Meter entered the registry (meter-service, `meter_events` topic) — distinct from the on-chain `MeterOnboarded` |
+| `WalletLinkRequested` | Email | `confirm_wallet.html.tera` | Pre-link wallet ownership confirmation (no upstream producer yet) |

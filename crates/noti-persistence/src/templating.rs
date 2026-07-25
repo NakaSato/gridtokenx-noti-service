@@ -62,13 +62,10 @@ mod tests {
         TemplateEngine::new(dir).expect("template engine loads (also validates all template syntax)")
     }
 
-    /// Render every template the Kafka consumers route to, with the exact
-    /// variable shape each handler passes (see `consumers/events.rs`). Guards
-    /// against a template referencing a variable the producer never supplies.
-    #[test]
-    fn all_routed_templates_render() {
-        let e = engine();
-        let cases: &[(&str, serde_json::Value)] = &[
+    /// Every template the Kafka consumers route to, paired with the exact
+    /// variable shape its handler passes (see `consumers/events.rs`).
+    fn routed_template_cases() -> Vec<(&'static str, serde_json::Value)> {
+        vec![
             ("welcome.html.tera", json!({ "name": "Alice" })),
             (
                 "trade_matched.txt.tera",
@@ -97,7 +94,56 @@ mod tests {
             ),
             (
                 "security_alert.txt.tera",
-                json!({ "wallet_address": "0xabc", "shard_id": "1", "transaction_signature": "SIG3" }),
+                json!({
+                    "headline": "New Wallet Linked",
+                    "summary": "A new Solana wallet has been linked to your account.",
+                    "wallet_address": "0xabc",
+                    "shard_id": "1",
+                    "transaction_signature": "SIG3"
+                }),
+            ),
+            // Off-chain variant: empty on-chain fields must omit their rows.
+            (
+                "security_alert.txt.tera",
+                json!({
+                    "headline": "Wallet Unlinked",
+                    "summary": "A Solana wallet was removed from your account.",
+                    "wallet_address": "0xabc",
+                    "shard_id": "",
+                    "transaction_signature": ""
+                }),
+            ),
+            (
+                "account_locked.html.tera",
+                json!({ "identifier": "dave@example.com", "lockout_minutes": 15 }),
+            ),
+            (
+                "new_login.txt.tera",
+                json!({ "username": "dave", "ip_address": "203.0.113.7" }),
+            ),
+            (
+                "order_update.txt.tera",
+                json!({ "order_id": "ORD1", "filled_amount": "5.5", "status": "filled" }),
+            ),
+            (
+                "meter_registered.txt.tera",
+                json!({
+                    "serial_number": "MTR-1",
+                    "meter_id": "m1",
+                    "zone_id": "3",
+                    "status": "verified"
+                }),
+            ),
+            (
+                "order_created.txt.tera",
+                json!({
+                    "order_id": "ORD1",
+                    "order_type": "limit",
+                    "side": "buy",
+                    "energy_amount": "100.5",
+                    "price_per_kwh": "4.25",
+                    "status": "open"
+                }),
             ),
             (
                 "confirm_wallet.html.tera",
@@ -107,11 +153,18 @@ mod tests {
                     "confirmation_url": "https://app.example/wallet/confirm?token=tok"
                 }),
             ),
-        ];
+        ]
+    }
 
-        for (name, vars) in cases {
+    /// Render every routed template. Guards against a template referencing a
+    /// variable the producer never supplies.
+    #[test]
+    fn all_routed_templates_render() {
+        let e = engine();
+
+        for (name, vars) in routed_template_cases() {
             let out = e
-                .render(name, vars)
+                .render(name, &vars)
                 .unwrap_or_else(|err| panic!("render '{name}' failed: {err}"));
             assert!(!out.trim().is_empty(), "template '{name}' rendered empty");
 
@@ -131,8 +184,10 @@ mod tests {
                 let title = out
                     .split_once("<title>")
                     .and_then(|(_, rest)| rest.split_once("</title>"))
-                    .map(|(t, _)| t.trim())
-                    .unwrap_or_else(|| panic!("template '{name}' has no <title>"));
+                    .map_or_else(
+                        || panic!("template '{name}' has no <title>"),
+                        |(t, _)| t.trim(),
+                    );
                 assert_ne!(
                     title, "GridTokenX",
                     "template '{name}' missing `{{% block subject %}}` (got base default title)"

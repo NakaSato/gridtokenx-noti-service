@@ -1,0 +1,8 @@
+Your smart meter is registered.
+
+Serial Number: {{ serial_number }}
+Meter ID: {{ meter_id }}
+Status: {{ status }}
+{% if zone_id %}Zone: {{ zone_id }}
+{% endif %}
+Readings from this meter will now be collected and settled to your account.

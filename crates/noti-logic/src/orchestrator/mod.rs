@@ -4,10 +4,12 @@
 //! All dependencies are injected via trait objects from `noti_core::traits`.
 //!
 //! The orchestrator's methods are split across submodules by concern:
-//! [`queue`] (ingestion), [`dispatch`] (delivery + retry), and [`query`]
-//! (user-facing reads). They all extend the same [`NotificationOrchestrator`]
-//! via separate `impl` blocks.
+//! [`queue`] (ingestion), [`dispatch`] (delivery + retry), [`query`]
+//! (user-facing reads), and [`counters`] (cache-backed suppression state).
+//! They all extend the same [`NotificationOrchestrator`] via separate `impl`
+//! blocks.
 
+mod counters;
 mod dispatch;
 mod query;
 mod queue;

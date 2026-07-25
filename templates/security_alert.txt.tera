@@ -1,9 +1,12 @@
-SECURITY ALERT: New Wallet Linked
+{# Shared wallet security alert. Callers pass `headline` + `summary` per event
+   (linked / unlinked / primary changed); the on-chain rows render only when the
+   event carries them — pass an empty string to omit a row. #}
+SECURITY ALERT: {{ headline }}
 
-A new Solana wallet has been linked to your GridTokenX account.
+{{ summary }}
 
 Wallet Address: {{ wallet_address }}
-On-Chain Status: Registered (Shard {{ shard_id }})
-Transaction: {{ transaction_signature }}
-
+{% if shard_id %}On-Chain Status: Registered (Shard {{ shard_id }})
+{% endif %}{% if transaction_signature %}Transaction: {{ transaction_signature }}
+{% endif %}
 If you did not perform this action, please contact support immediately.

@@ -87,6 +87,7 @@ fn test_config(
         kafka_topic_user_events: "iam.user.events".to_string(),
         kafka_topic_audit_events: "iam.audit.events".to_string(),
         kafka_topic_trading_triggers: "trading.triggers".to_string(),
+        kafka_topic_meter_events: "meter_events".to_string(),
     }
 }
 

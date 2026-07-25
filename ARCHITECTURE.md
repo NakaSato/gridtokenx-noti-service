@@ -107,7 +107,27 @@ noti-server     →  noti-core, noti-protocol, noti-persistence, noti-logic, not
 | `VerificationEmailRequested` | Email | `verify_email.html.tera` | `name`, `verification_url` |
 | `UserOnboarded` | WebSocket | `user_onboarded.txt.tera` | `user_account_pda`, `transaction_signature` |
 | `MeterOnboarded` | WebSocket | `meter_onboarded.txt.tera` | `meter_id`, `meter_type`, `transaction_signature` |
-| `UserWalletLinked` | WebSocket **+ Push** | `security_alert.txt.tera` (+ `push_notification.txt.tera`) | `wallet_address`, `shard_id`, `transaction_signature` |
+| `UserWalletLinked` | WebSocket **+ Push** | `security_alert.txt.tera` (+ `push_notification.txt.tera`) | `headline`, `summary`, `wallet_address`, `shard_id`, `transaction_signature` |
+| `UserWalletUnlinked` | WebSocket **+ Push** | `security_alert.txt.tera` (+ `push_notification.txt.tera`) | `headline`, `summary`, `wallet_address` (on-chain rows empty) |
+| `UserWalletPrimaryChanged` | WebSocket **+ Push** | `security_alert.txt.tera` (+ `push_notification.txt.tera`) | `headline`, `summary`, `wallet_address` (on-chain rows empty) |
+| `AccountLocked` | Email | `account_locked.html.tera` | `identifier`, `lockout_minutes` |
+| `UserLoggedIn` | WebSocket **+ Push** (new IP only) | `new_login.txt.tera` (+ `push_notification.txt.tera`) | `username`, `ip_address` |
+| `OrderCreated` | WebSocket | `order_created.txt.tera` | `order_id`, `order_type`, `side`, `energy_amount`, `price_per_kwh`, `status` |
+| `OrderUpdate` | WebSocket (**+ Push** on terminal states) | `order_update.txt.tera` (+ `push_notification.txt.tera`) | `order_id`, `filled_amount`, `status` |
+| `MeterRegistered` / `MeterUpdated` | WebSocket | `meter_registered.txt.tera` | `serial_number`, `meter_id`, `zone_id`, `status` |
+| `WalletLinkRequested` | Email | `confirm_wallet.html.tera` | `name`, `wallet_address`, `confirmation_url` |
+
+> **`security_alert.txt.tera` is shared** by the three wallet events: the handler supplies `headline` + `summary`, and passes empty `shard_id` / `transaction_signature` for off-chain changes so those rows are omitted.
+>
+> **`AccountLocked` has no `user_id`** — IAM raises it on the login *identifier* (email or username, `iam-logic/src/auth_service.rs`). With no shared users table, a username cannot be resolved to a mailbox, so the handler emails only when the identifier is an address and never pushes.
+>
+> **`UserLoggedIn` fires on every sign-in**, so the handler alerts only on a *new* IP: `NotificationOrchestrator::bump_counter` (`noti-logic/src/orchestrator/counters.rs`) increments `login_ip:{user_id}:{ip}` with a 90-day TTL and a return of `1` means first sighting. IAM sends no device fingerprint, so IP is the only novelty signal available. The lookup **fails closed** — a cache outage makes every login look new, and alerting then would storm every user.
+>
+> **`MeterRegistered` arrives on a fourth topic.** Meter-service publishes to `meter_events` (`METER_EVENTS_TOPIC`), not the IAM topics, so the consumer subscribes to `kafka_topic_meter_events` alongside the other three (`bin/noti-server/src/startup.rs`). `MeterUpdated` is wire-identical and shares the handler; meter-service defines it but has no update path emitting it yet.
+>
+> **`OrderUpdate` pushes only on terminal states.** A partially-filled order can tick several times per matching cycle, so `partially_filled` stays WebSocket-only; `filled` / `cancelled` / `expired` also push. Its `user_id` is `Option` upstream (`gridtokenx-trading-service/crates/trading-core/src/events.rs`) — the handler skips when it is absent, since this service owns no orders table to resolve an owner.
+>
+> **`WalletLinkRequested` has no producer yet** — the event name is defined by this service's handler (pre-link ownership confirmation); IAM must emit it and the frontend must serve `/wallet/confirm` before the flow is live.
 
 > **Push channel:** the `WebSocket + Push` events also fan an FCM push out to the user's registered devices. The Push recipient is the `user_id`; `push_notification.txt.tera` renders a `{title, body}` JSON envelope (built in the handler) that `FcmProvider` parses. Independent idempotency keys (`…:push:…`) keep the two channels decoupled under redelivery.
 

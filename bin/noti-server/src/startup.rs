@@ -248,6 +248,9 @@ pub async fn run(config: Config, token: CancellationToken) -> Result<()> {
             // subscription or verification emails stop arriving.
             config.kafka_topic_audit_events.clone(),
             config.kafka_topic_trading_triggers.clone(),
+            // Meter-service registry events (`MeterRegistered`). Lives on its
+            // own topic, not the IAM ones.
+            config.kafka_topic_meter_events.clone(),
         ];
         let orch = orchestrator.clone();
         let frontend_url = config.frontend_url.clone();

@@ -220,6 +220,113 @@ struct MeterOnboarded {
     transaction_signature: String,
 }
 
+/// Order lifecycle change from the trading service: partial fill, fill,
+/// IOC cancellation, or expiry reap.
+#[derive(Debug, Deserialize)]
+struct OrderUpdate {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    filled_amount: Value,
+    #[serde(default)]
+    status: String,
+}
+
+/// Meter registry event from meter-service (`meter_events` topic). Distinct
+/// from IAM's `MeterOnboarded`, which reports the *on-chain* registration —
+/// this one fires when the meter enters the registry.
+#[derive(Debug, Deserialize)]
+struct MeterRegistered {
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    serial_number: String,
+    #[serde(default)]
+    meter_id: Option<String>,
+    #[serde(default)]
+    zone_id: Option<i32>,
+    #[serde(default)]
+    status: String,
+}
+
+/// Order acknowledgement from the trading service (`trading.triggers`).
+/// Amounts stay raw JSON — upstream encodes `Decimal` as a number or a string.
+#[derive(Debug, Deserialize)]
+struct OrderCreated {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    order_type: String,
+    #[serde(default)]
+    side: String,
+    #[serde(default)]
+    energy_amount: Value,
+    #[serde(default)]
+    price_per_kwh: Value,
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserLoggedIn {
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    ip_address: Option<String>,
+}
+
+/// Account lockout after repeated failed sign-ins. IAM's payload carries the
+/// *login identifier* (email or username, `auth_service.rs`) — not a user id —
+/// so the email only goes out when the identifier is itself an address.
+#[derive(Debug, Deserialize)]
+struct AccountLocked {
+    #[serde(default)]
+    identifier: String,
+    #[serde(default)]
+    lockout_secs: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserWalletUnlinked {
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    wallet_address: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserWalletPrimaryChanged {
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    wallet_address: String,
+}
+
+/// Pre-link confirmation request: the wallet is *not* linked yet — the user
+/// must prove ownership via the emailed callback before IAM registers the link
+/// on-chain (which then emits `UserWalletLinked`).
+#[derive(Debug, Deserialize)]
+struct WalletLinkRequested {
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    wallet_address: String,
+    #[serde(default)]
+    confirmation_url: String,
+    #[serde(default)]
+    token: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct UserWalletLinked {
     #[serde(default)]
@@ -281,7 +388,20 @@ pub async fn dispatch(
         }
         "UserOnboarded" => user_onboarded(orchestrator, ctx, data).await,
         "MeterOnboarded" => meter_onboarded(orchestrator, ctx, data).await,
+        "WalletLinkRequested" => {
+            wallet_link_requested(orchestrator, frontend_url, ctx, data).await
+        }
         "UserWalletLinked" => user_wallet_linked(orchestrator, ctx, data).await,
+        "UserWalletUnlinked" => user_wallet_unlinked(orchestrator, ctx, data).await,
+        "UserWalletPrimaryChanged" => user_wallet_primary_changed(orchestrator, ctx, data).await,
+        "AccountLocked" => account_locked(orchestrator, ctx, data).await,
+        "UserLoggedIn" => user_logged_in(orchestrator, ctx, data).await,
+        "OrderCreated" => order_created(orchestrator, ctx, data).await,
+        "OrderUpdate" => order_update(orchestrator, ctx, data).await,
+        // `MeterUpdated` is reserved upstream (meter-service defines it, no
+        // update path emits it yet) and is wire-identical, so it shares the
+        // handler and template.
+        "MeterRegistered" | "MeterUpdated" => meter_registered(orchestrator, ctx, data).await,
         other => {
             // Not a notification trigger (e.g. `ApiKeyVerified` on
             // `iam.audit.events`, which we subscribe to for
@@ -376,6 +496,44 @@ async fn order_matched(
         )
         .await?;
     }
+
+    Ok(())
+}
+
+/// Order acknowledgement. WebSocket only — the user is in the app at the
+/// moment they place an order, so a push would be redundant; the fills that
+/// arrive later (`OrderMatched`) are the ones worth pushing off-session.
+async fn order_created(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<OrderCreated>("OrderCreated", data) else {
+        return Ok(());
+    };
+
+    let Some(uid) = parse_uuid(p.user_id.as_deref()) else {
+        return Ok(());
+    };
+
+    orchestrator
+        .queue_notification(
+            Some(uid),
+            NotificationChannel::WebSocket,
+            uid.to_string(),
+            "order_created.txt.tera".to_string(),
+            serde_json::json!({
+                "order_id": p.id.unwrap_or_default(),
+                "order_type": p.order_type,
+                "side": p.side,
+                "energy_amount": plain(&p.energy_amount),
+                "price_per_kwh": plain(&p.price_per_kwh),
+                "status": p.status
+            }),
+            Some(ctx.idem("order_created")),
+        )
+        .await
+        .map_err(into_anyhow)?;
 
     Ok(())
 }
@@ -688,6 +846,95 @@ async fn user_onboarded(
     Ok(())
 }
 
+/// Order lifecycle update. WebSocket always; Push only for terminal states —
+/// a partially-filled order can tick many times per matching cycle, and each
+/// push is a phone buzz.
+async fn order_update(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<OrderUpdate>("OrderUpdate", data) else {
+        return Ok(());
+    };
+
+    // `user_id` is `None` when the emitting path could not resolve the owner
+    // (trading-core `Event::OrderUpdate`) — nothing to route to.
+    let Some(uid) = parse_uuid(p.user_id.as_deref()) else {
+        debug!("Skipping OrderUpdate: event carried no resolvable user id");
+        return Ok(());
+    };
+
+    let order_id = p.id.unwrap_or_default();
+    let filled = plain(&p.filled_amount);
+
+    orchestrator
+        .queue_notification(
+            Some(uid),
+            NotificationChannel::WebSocket,
+            uid.to_string(),
+            "order_update.txt.tera".to_string(),
+            serde_json::json!({
+                "order_id": order_id,
+                "filled_amount": filled,
+                "status": p.status
+            }),
+            Some(ctx.idem("order_update")),
+        )
+        .await
+        .map_err(into_anyhow)?;
+
+    // Terminal states only (trading-core `OrderStatus::as_str`).
+    if matches!(p.status.as_str(), "filled" | "cancelled" | "expired") {
+        queue_push(
+            orchestrator,
+            uid,
+            "Order Update",
+            format!("Your order is {} ({filled} kWh filled).", p.status),
+            ctx.idem("order_update:push"),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+/// Registry-level meter registration (meter-service). WebSocket only — the
+/// on-chain confirmation that follows (`MeterOnboarded`) is the milestone
+/// worth a second notification, so this one stays in-app.
+async fn meter_registered(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<MeterRegistered>("MeterRegistered", data) else {
+        return Ok(());
+    };
+
+    let Some(uid) = parse_uuid(p.user_id.as_deref()) else {
+        return Ok(());
+    };
+
+    orchestrator
+        .queue_notification(
+            Some(uid),
+            NotificationChannel::WebSocket,
+            uid.to_string(),
+            "meter_registered.txt.tera".to_string(),
+            serde_json::json!({
+                "serial_number": p.serial_number,
+                "meter_id": p.meter_id.unwrap_or_default(),
+                "zone_id": p.zone_id.map_or_else(String::new, |z| z.to_string()),
+                "status": p.status
+            }),
+            Some(ctx.idem("meter_registered")),
+        )
+        .await
+        .map_err(into_anyhow)?;
+
+    Ok(())
+}
+
 async fn meter_onboarded(
     orchestrator: &Arc<NotificationOrchestrator>,
     ctx: &MsgCtx,
@@ -720,6 +967,67 @@ async fn meter_onboarded(
     Ok(())
 }
 
+async fn wallet_link_requested(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    frontend_url: Option<&str>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<WalletLinkRequested>("WalletLinkRequested", data) else {
+        return Ok(());
+    };
+
+    // Rewrite upstream base URL to frontend_url when configured; fall back to
+    // constructing from token when upstream provides nothing. The callback
+    // carries the wallet so the page can show what is being confirmed.
+    let confirmation_url = if !p.confirmation_url.is_empty() {
+        rewrite_url(frontend_url, &p.confirmation_url)
+    } else if !p.token.is_empty() {
+        build_callback_url(
+            frontend_url,
+            "wallet/confirm",
+            &format!(
+                "token={}&wallet={}",
+                urlencode(&p.token),
+                urlencode(&p.wallet_address)
+            ),
+        )
+    } else {
+        p.confirmation_url.clone()
+    };
+
+    if p.email.is_empty() || p.wallet_address.is_empty() {
+        return Ok(());
+    }
+
+    if confirmation_url.is_empty() {
+        warn!(
+            "Skipping wallet confirmation email for {}: no confirmation URL \
+             (FRONTEND_URL unconfigured and event carried neither url nor token)",
+            p.email
+        );
+        return Ok(());
+    }
+
+    orchestrator
+        .queue_notification(
+            parse_uuid(p.user_id.as_deref()),
+            NotificationChannel::Email,
+            p.email,
+            "confirm_wallet.html.tera".to_string(),
+            serde_json::json!({
+                "name": p.username,
+                "wallet_address": p.wallet_address,
+                "confirmation_url": confirmation_url
+            }),
+            Some(ctx.idem("wallet_confirm")),
+        )
+        .await
+        .map_err(into_anyhow)?;
+
+    Ok(())
+}
+
 async fn user_wallet_linked(
     orchestrator: &Arc<NotificationOrchestrator>,
     ctx: &MsgCtx,
@@ -740,6 +1048,8 @@ async fn user_wallet_linked(
             uid.to_string(),
             "security_alert.txt.tera".to_string(),
             serde_json::json!({
+                "headline": "New Wallet Linked",
+                "summary": "A new Solana wallet has been linked to your GridTokenX account.",
                 "wallet_address": p.wallet_address,
                 "shard_id": p.shard_id,
                 "transaction_signature": p.transaction_signature
@@ -763,6 +1073,202 @@ async fn user_wallet_linked(
     Ok(())
 }
 
+async fn user_wallet_unlinked(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<UserWalletUnlinked>("UserWalletUnlinked", data) else {
+        return Ok(());
+    };
+
+    let Some(uid) = parse_uuid(p.user_id.as_deref()) else {
+        return Ok(());
+    };
+
+    // No on-chain rows: unlinking is an off-chain account change, so `shard_id`
+    // and `transaction_signature` stay empty and the template omits them.
+    orchestrator
+        .queue_notification(
+            Some(uid),
+            NotificationChannel::WebSocket,
+            uid.to_string(),
+            "security_alert.txt.tera".to_string(),
+            serde_json::json!({
+                "headline": "Wallet Unlinked",
+                "summary": "A Solana wallet was removed from your GridTokenX account.",
+                "wallet_address": p.wallet_address,
+                "shard_id": "",
+                "transaction_signature": ""
+            }),
+            Some(ctx.idem("wallet_unlink")),
+        )
+        .await
+        .map_err(into_anyhow)?;
+
+    queue_push(
+        orchestrator,
+        uid,
+        "Security Alert: Wallet Unlinked",
+        format!("A wallet ({}) was removed from your account.", p.wallet_address),
+        ctx.idem("wallet_unlink:push"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn user_wallet_primary_changed(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<UserWalletPrimaryChanged>("UserWalletPrimaryChanged", data) else {
+        return Ok(());
+    };
+
+    let Some(uid) = parse_uuid(p.user_id.as_deref()) else {
+        return Ok(());
+    };
+
+    orchestrator
+        .queue_notification(
+            Some(uid),
+            NotificationChannel::WebSocket,
+            uid.to_string(),
+            "security_alert.txt.tera".to_string(),
+            serde_json::json!({
+                "headline": "Primary Wallet Changed",
+                "summary": "A different Solana wallet is now the primary wallet \
+                            for your GridTokenX account — settlements will use it.",
+                "wallet_address": p.wallet_address,
+                "shard_id": "",
+                "transaction_signature": ""
+            }),
+            Some(ctx.idem("wallet_primary")),
+        )
+        .await
+        .map_err(into_anyhow)?;
+
+    queue_push(
+        orchestrator,
+        uid,
+        "Security Alert: Primary Wallet Changed",
+        format!("Your primary wallet is now {}.", p.wallet_address),
+        ctx.idem("wallet_primary:push"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// How long a login IP stays "known" for a user. A sign-in from an IP not seen
+/// within this window is treated as new and alerted on.
+const LOGIN_IP_MEMORY_SECS: u64 = 90 * 24 * 60 * 60;
+
+async fn user_logged_in(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<UserLoggedIn>("UserLoggedIn", data) else {
+        return Ok(());
+    };
+
+    let Some(uid) = parse_uuid(p.user_id.as_deref()) else {
+        return Ok(());
+    };
+
+    // Every successful login raises this event, so alerting unconditionally
+    // would mail users on each sign-in. IAM carries no device fingerprint, so
+    // novelty is decided here: the first sign-in from an IP within the memory
+    // window alerts, later ones are silent.
+    let Some(ip) = p.ip_address.filter(|ip| !ip.is_empty()) else {
+        debug!("Skipping UserLoggedIn alert: event carried no IP address");
+        return Ok(());
+    };
+
+    let seen = match orchestrator
+        .bump_counter(&format!("login_ip:{uid}:{ip}"), LOGIN_IP_MEMORY_SECS)
+        .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            // Fail closed: with the cache down every login looks new, which
+            // would alert-storm the whole user base. Skip instead.
+            warn!("Skipping UserLoggedIn alert for {uid}: IP-history lookup failed: {e}");
+            return Ok(());
+        }
+    };
+
+    if seen > 1 {
+        return Ok(());
+    }
+
+    orchestrator
+        .queue_notification(
+            Some(uid),
+            NotificationChannel::WebSocket,
+            uid.to_string(),
+            "new_login.txt.tera".to_string(),
+            serde_json::json!({ "username": p.username, "ip_address": ip }),
+            Some(ctx.idem("new_login")),
+        )
+        .await
+        .map_err(into_anyhow)?;
+
+    queue_push(
+        orchestrator,
+        uid,
+        "Security Alert: New Sign-In",
+        format!("Your account was signed in from a new IP address ({ip})."),
+        ctx.idem("new_login:push"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn account_locked(
+    orchestrator: &Arc<NotificationOrchestrator>,
+    ctx: &MsgCtx,
+    data: Value,
+) -> anyhow::Result<()> {
+    let Some(p) = parse::<AccountLocked>("AccountLocked", data) else {
+        return Ok(());
+    };
+
+    // The lockout event is raised on the *login identifier*, which IAM accepts
+    // as either an email or a username, and carries no user id. With no shared
+    // users table (noti owns its own DB), a username cannot be resolved to a
+    // mailbox here — skip rather than send to a non-address. Push is impossible
+    // for the same reason: the FCM recipient is the user id.
+    if !p.identifier.contains('@') {
+        debug!("Skipping AccountLocked email: identifier is not an address");
+        return Ok(());
+    }
+
+    // Round up so a sub-minute lockout never renders as "0 minute(s)".
+    let lockout_minutes = p.lockout_secs.div_ceil(60).max(1);
+
+    orchestrator
+        .queue_notification(
+            None,
+            NotificationChannel::Email,
+            p.identifier.clone(),
+            "account_locked.html.tera".to_string(),
+            serde_json::json!({
+                "identifier": p.identifier,
+                "lockout_minutes": lockout_minutes
+            }),
+            Some(ctx.idem("account_locked")),
+        )
+        .await
+        .map_err(into_anyhow)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,6 +1287,15 @@ mod tests {
     /// notification. Cache and MQ accept everything; providers/template are
     /// never exercised on the queue path.
     fn test_orchestrator() -> (Arc<NotificationOrchestrator>, Sink) {
+        test_orchestrator_with_counter(Ok(1))
+    }
+
+    /// As [`test_orchestrator`], but with a fixed result for the cache counter
+    /// backing new-IP detection: `Ok(1)` = first sighting, `Ok(n>1)` = known,
+    /// `Err` = cache unreachable.
+    fn test_orchestrator_with_counter(
+        counter: noti_core::error::Result<i64>,
+    ) -> (Arc<NotificationOrchestrator>, Sink) {
         let sink: Sink = Arc::new(Mutex::new(Vec::new()));
         let recorder = sink.clone();
 
@@ -792,6 +1307,13 @@ mod tests {
 
         let mut cache = MockCacheTrait::new();
         cache.expect_set_value().times(..).returning(|_, _, _| Ok(()));
+        cache
+            .expect_increment_with_ttl()
+            .times(..)
+            .returning(move |_, _| match &counter {
+                Ok(n) => Ok(*n),
+                Err(e) => Err(noti_core::error::NotiError::Internal(e.to_string())),
+            });
 
         let mut mq = MockMessageQueueTrait::new();
         mq.expect_publish_dispatch().times(..).returning(|_| Ok(()));
@@ -967,6 +1489,511 @@ mod tests {
         dispatch(&orch, None, &ctx(), "VerificationEmailRequested", data)
             .await
             .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn order_update_pushes_only_on_terminal_status() {
+        for (status, expected) in [
+            ("partially_filled", 1),
+            ("filled", 2),
+            ("cancelled", 2),
+            ("expired", 2),
+        ] {
+            let (orch, sink) = test_orchestrator();
+            let data = serde_json::json!({
+                "id": Uuid::new_v4().to_string(),
+                "user_id": Uuid::new_v4().to_string(),
+                "filled_amount": "5.5",
+                "status": status
+            });
+
+            dispatch(&orch, None, &ctx(), "OrderUpdate", data)
+                .await
+                .expect("dispatch ok");
+
+            let queued = sink.lock().expect("lock");
+            assert_eq!(
+                queued.len(),
+                expected,
+                "status '{status}' should queue {expected} notification(s)"
+            );
+            assert_eq!(queued[0].template_id, "order_update.txt.tera");
+            assert!(matches!(queued[0].channel, NotificationChannel::WebSocket));
+        }
+    }
+
+    #[tokio::test]
+    async fn order_update_skips_when_owner_is_absent() {
+        let (orch, sink) = test_orchestrator();
+        // Upstream could not resolve the owner — `user_id` serializes as null.
+        let data = serde_json::json!({
+            "id": Uuid::new_v4().to_string(),
+            "user_id": null,
+            "filled_amount": "5.5",
+            "status": "filled"
+        });
+
+        dispatch(&orch, None, &ctx(), "OrderUpdate", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn meter_registered_notifies_owner_on_websocket() {
+        let (orch, sink) = test_orchestrator();
+        let uid = Uuid::new_v4();
+        let meter_id = Uuid::new_v4();
+        let data = serde_json::json!({
+            "serial_number": "MTR-1",
+            "meter_id": meter_id.to_string(),
+            "user_id": uid.to_string(),
+            "zone_id": 3,
+            "status": "verified",
+            "wallet_address": null
+        });
+
+        dispatch(&orch, None, &ctx(), "MeterRegistered", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1);
+        let n = &queued[0];
+        assert_eq!(n.template_id, "meter_registered.txt.tera");
+        assert!(matches!(n.channel, NotificationChannel::WebSocket));
+        assert_eq!(n.user_id, Some(uid));
+        assert_eq!(n.variables["serial_number"], "MTR-1");
+        assert_eq!(n.variables["zone_id"], "3");
+        assert_eq!(
+            n.idempotency_key.as_deref(),
+            Some("meter_registered:evt-abc")
+        );
+    }
+
+    #[tokio::test]
+    async fn meter_registered_tolerates_absent_zone() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "serial_number": "MTR-2",
+            "meter_id": Uuid::new_v4().to_string(),
+            "user_id": Uuid::new_v4().to_string(),
+            "zone_id": null,
+            "status": "unverified"
+        });
+
+        dispatch(&orch, None, &ctx(), "MeterRegistered", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        // Empty string, so the template's `{% if zone_id %}` row is omitted.
+        assert_eq!(queued[0].variables["zone_id"], "");
+    }
+
+    #[tokio::test]
+    async fn meter_updated_reuses_the_registration_template() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "serial_number": "MTR-3",
+            "meter_id": Uuid::new_v4().to_string(),
+            "user_id": Uuid::new_v4().to_string(),
+            "status": "verified"
+        });
+
+        dispatch(&orch, None, &ctx(), "MeterUpdated", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(
+            sink.lock().expect("lock")[0].template_id,
+            "meter_registered.txt.tera"
+        );
+    }
+
+    #[tokio::test]
+    async fn order_created_acks_on_websocket_only() {
+        let (orch, sink) = test_orchestrator();
+        let uid = Uuid::new_v4();
+        let order_id = Uuid::new_v4();
+        let data = serde_json::json!({
+            "id": order_id.to_string(),
+            "user_id": uid.to_string(),
+            "order_type": "limit",
+            "side": "buy",
+            // Decimals arrive as strings from the trading outbox.
+            "energy_amount": "100.5",
+            "price_per_kwh": "4.25",
+            "status": "open"
+        });
+
+        dispatch(&orch, None, &ctx(), "OrderCreated", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1, "no push — the user is in the app");
+        let n = &queued[0];
+        assert_eq!(n.template_id, "order_created.txt.tera");
+        assert!(matches!(n.channel, NotificationChannel::WebSocket));
+        assert_eq!(n.user_id, Some(uid));
+        assert_eq!(n.variables["order_id"], order_id.to_string());
+        // `plain` strips the JSON quotes so the template renders 100.5, not "100.5".
+        assert_eq!(n.variables["energy_amount"], "100.5");
+        assert_eq!(n.idempotency_key.as_deref(), Some("order_created:evt-abc"));
+    }
+
+    #[tokio::test]
+    async fn order_created_renders_numeric_decimals() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "id": Uuid::new_v4().to_string(),
+            "user_id": Uuid::new_v4().to_string(),
+            "side": "sell",
+            "energy_amount": 100.5,
+            "price_per_kwh": 4,
+            "status": "open"
+        });
+
+        dispatch(&orch, None, &ctx(), "OrderCreated", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued[0].variables["energy_amount"], "100.5");
+        assert_eq!(queued[0].variables["price_per_kwh"], "4");
+    }
+
+    #[tokio::test]
+    async fn order_created_skips_non_uuid_user() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "id": "o1", "user_id": "nope", "side": "buy" });
+
+        dispatch(&orch, None, &ctx(), "OrderCreated", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn login_from_new_ip_alerts_on_ws_and_push() {
+        let (orch, sink) = test_orchestrator_with_counter(Ok(1));
+        let uid = Uuid::new_v4();
+        let data = serde_json::json!({
+            "user_id": uid.to_string(),
+            "username": "alice",
+            "ip_address": "203.0.113.7"
+        });
+
+        dispatch(&orch, None, &ctx(), "UserLoggedIn", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 2, "WS + Push");
+        let ws = queued
+            .iter()
+            .find(|n| matches!(n.channel, NotificationChannel::WebSocket))
+            .expect("ws notification");
+        assert_eq!(ws.template_id, "new_login.txt.tera");
+        assert_eq!(ws.variables["ip_address"], "203.0.113.7");
+        assert_eq!(ws.idempotency_key.as_deref(), Some("new_login:evt-abc"));
+    }
+
+    #[tokio::test]
+    async fn login_from_known_ip_is_silent() {
+        // Counter > 1 → this IP is already in the user's history.
+        let (orch, sink) = test_orchestrator_with_counter(Ok(2));
+        let data = serde_json::json!({
+            "user_id": Uuid::new_v4().to_string(),
+            "username": "alice",
+            "ip_address": "203.0.113.7"
+        });
+
+        dispatch(&orch, None, &ctx(), "UserLoggedIn", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn login_alert_fails_closed_when_cache_is_down() {
+        // With no IP history available every login would look new — alerting
+        // then would storm the whole user base, so the handler stays silent.
+        let (orch, sink) =
+            test_orchestrator_with_counter(Err(noti_core::error::NotiError::Internal(
+                "redis down".to_string(),
+            )));
+        let data = serde_json::json!({
+            "user_id": Uuid::new_v4().to_string(),
+            "username": "alice",
+            "ip_address": "203.0.113.7"
+        });
+
+        dispatch(&orch, None, &ctx(), "UserLoggedIn", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn login_without_ip_is_silent() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "user_id": Uuid::new_v4().to_string(),
+            "username": "alice",
+            "ip_address": null
+        });
+
+        dispatch(&orch, None, &ctx(), "UserLoggedIn", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn wallet_unlinked_alerts_on_ws_and_push() {
+        let (orch, sink) = test_orchestrator();
+        let uid = Uuid::new_v4();
+        let data = serde_json::json!({
+            "user_id": uid.to_string(),
+            "wallet_address": "9xQe"
+        });
+
+        dispatch(&orch, None, &ctx(), "UserWalletUnlinked", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 2, "WS + Push");
+        let ws = queued
+            .iter()
+            .find(|n| matches!(n.channel, NotificationChannel::WebSocket))
+            .expect("ws notification");
+        assert_eq!(ws.template_id, "security_alert.txt.tera");
+        assert_eq!(ws.variables["headline"], "Wallet Unlinked");
+        // Off-chain change: the on-chain rows are suppressed by empty values.
+        assert_eq!(ws.variables["transaction_signature"], "");
+        assert_eq!(ws.idempotency_key.as_deref(), Some("wallet_unlink:evt-abc"));
+
+        let push = queued
+            .iter()
+            .find(|n| matches!(n.channel, NotificationChannel::Push))
+            .expect("push notification");
+        assert_eq!(
+            push.idempotency_key.as_deref(),
+            Some("wallet_unlink:push:evt-abc"),
+            "push key is distinct from the WS key for the same event"
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_primary_changed_alerts_on_ws_and_push() {
+        let (orch, sink) = test_orchestrator();
+        let uid = Uuid::new_v4();
+        let data = serde_json::json!({
+            "user_id": uid.to_string(),
+            "wallet_address": "9xQe",
+            "is_primary": true
+        });
+
+        dispatch(&orch, None, &ctx(), "UserWalletPrimaryChanged", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 2, "WS + Push");
+        let ws = queued
+            .iter()
+            .find(|n| matches!(n.channel, NotificationChannel::WebSocket))
+            .expect("ws notification");
+        assert_eq!(ws.template_id, "security_alert.txt.tera");
+        assert_eq!(ws.variables["headline"], "Primary Wallet Changed");
+        assert_eq!(ws.variables["wallet_address"], "9xQe");
+    }
+
+    #[tokio::test]
+    async fn wallet_events_skip_non_uuid_users() {
+        let (orch, sink) = test_orchestrator();
+
+        for event in ["UserWalletUnlinked", "UserWalletPrimaryChanged"] {
+            dispatch(
+                &orch,
+                None,
+                &ctx(),
+                event,
+                serde_json::json!({ "user_id": "not-a-uuid", "wallet_address": "9xQe" }),
+            )
+            .await
+            .expect("dispatch ok");
+        }
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn account_locked_emails_when_identifier_is_an_address() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "identifier": "dave@example.com",
+            "lockout_secs": 900
+        });
+
+        dispatch(&orch, None, &ctx(), "AccountLocked", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1, "email only — payload carries no user id");
+        let n = &queued[0];
+        assert_eq!(n.template_id, "account_locked.html.tera");
+        assert!(matches!(n.channel, NotificationChannel::Email));
+        assert_eq!(n.recipient, "dave@example.com");
+        assert_eq!(n.user_id, None);
+        assert_eq!(n.variables["lockout_minutes"], 15);
+        assert_eq!(n.idempotency_key.as_deref(), Some("account_locked:evt-abc"));
+    }
+
+    #[tokio::test]
+    async fn account_locked_rounds_sub_minute_lockout_up() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({ "identifier": "dave@example.com", "lockout_secs": 30 });
+
+        dispatch(&orch, None, &ctx(), "AccountLocked", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(
+            sink.lock().expect("lock")[0].variables["lockout_minutes"], 1,
+            "a 30s lockout must not render as 0 minutes"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_locked_skips_username_identifier() {
+        let (orch, sink) = test_orchestrator();
+        // IAM raises the lockout on the login identifier, which may be a
+        // username — unresolvable to a mailbox from this service.
+        let data = serde_json::json!({ "identifier": "dave", "lockout_secs": 900 });
+
+        dispatch(&orch, None, &ctx(), "AccountLocked", data)
+            .await
+            .expect("dispatch ok");
+
+        assert_eq!(sink.lock().expect("lock").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn wallet_link_requested_builds_confirm_link_from_token() {
+        let (orch, sink) = test_orchestrator();
+        let uid = Uuid::new_v4();
+        let data = serde_json::json!({
+            "user_id": uid.to_string(),
+            "email": "carol@example.com",
+            "username": "carol",
+            "wallet_address": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+            "token": "tok-w1"
+        });
+
+        dispatch(
+            &orch,
+            Some("https://app.gridtokenx.test/"),
+            &ctx(),
+            "WalletLinkRequested",
+            data,
+        )
+        .await
+        .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued.len(), 1, "confirmation is email-only (pre-link)");
+        let n = &queued[0];
+        assert_eq!(n.template_id, "confirm_wallet.html.tera");
+        assert!(matches!(n.channel, NotificationChannel::Email));
+        assert_eq!(n.recipient, "carol@example.com");
+        assert_eq!(n.user_id, Some(uid));
+        assert_eq!(
+            n.variables["confirmation_url"],
+            "https://app.gridtokenx.test/wallet/confirm?token=tok-w1\
+             &wallet=9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+        );
+        assert_eq!(n.idempotency_key.as_deref(), Some("wallet_confirm:evt-abc"));
+    }
+
+    #[tokio::test]
+    async fn wallet_link_requested_rewrites_upstream_url() {
+        let (orch, sink) = test_orchestrator();
+        let data = serde_json::json!({
+            "email": "carol@example.com",
+            "username": "carol",
+            "wallet_address": "9xQe",
+            "confirmation_url": "http://localhost:4001/wallet/confirm?token=tok-w2"
+        });
+
+        dispatch(
+            &orch,
+            Some("https://app.gridtokenx.test/"),
+            &ctx(),
+            "WalletLinkRequested",
+            data,
+        )
+        .await
+        .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(
+            queued[0].variables["confirmation_url"],
+            "https://app.gridtokenx.test/wallet/confirm?token=tok-w2"
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_link_requested_skips_incomplete_events() {
+        let (orch, sink) = test_orchestrator();
+
+        // No URL can be built (no frontend_url, no upstream url) → no broken email.
+        dispatch(
+            &orch,
+            None,
+            &ctx(),
+            "WalletLinkRequested",
+            serde_json::json!({
+                "email": "carol@example.com",
+                "wallet_address": "9xQe",
+                "token": "tok-w3"
+            }),
+        )
+        .await
+        .expect("dispatch ok");
+
+        // Missing wallet address → nothing to confirm.
+        dispatch(
+            &orch,
+            Some("https://app.gridtokenx.test/"),
+            &ctx(),
+            "WalletLinkRequested",
+            serde_json::json!({ "email": "carol@example.com", "token": "tok-w4" }),
+        )
+        .await
+        .expect("dispatch ok");
+
+        // Missing recipient.
+        dispatch(
+            &orch,
+            Some("https://app.gridtokenx.test/"),
+            &ctx(),
+            "WalletLinkRequested",
+            serde_json::json!({ "wallet_address": "9xQe", "token": "tok-w5" }),
+        )
+        .await
+        .expect("dispatch ok");
 
         assert_eq!(sink.lock().expect("lock").len(), 0);
     }

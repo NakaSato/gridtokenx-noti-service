@@ -1,0 +1,5 @@
+Order placed: {{ side }} {{ energy_amount }} kWh at {{ price_per_kwh }} per kWh.
+
+Order ID: {{ order_id }}
+Type: {{ order_type }}
+Status: {{ status }}

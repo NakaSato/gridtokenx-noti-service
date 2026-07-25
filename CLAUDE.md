@@ -55,7 +55,7 @@ bin/noti-server → noti-api → noti-logic → noti-core
 
 ### Notification Flow
 
-1. **Ingestion**: Kafka consumer (`consumers.rs`) listens to `iam.user.events`, `iam.audit.events` (and others). Maps event types (`UserRegistered`, `OrderMatched`, `ErcIssued`, `PasswordResetRequested`, `VerificationEmailRequested`, `UserOnboarded`, `MeterOnboarded`, `UserWalletLinked`) → `orchestrator.queue_notification()`.
+1. **Ingestion**: Kafka consumer (`consumers.rs`) listens to `iam.user.events`, `iam.audit.events` (and others). Maps event types (`UserRegistered`, `OrderMatched`, `ErcIssued`, `PasswordResetRequested`, `VerificationEmailRequested`, `UserOnboarded`, `MeterOnboarded`, `UserWalletLinked`, `UserWalletUnlinked`, `UserWalletPrimaryChanged`, `AccountLocked`, `UserLoggedIn`, `OrderCreated`, `OrderUpdate`, `MeterRegistered`, `WalletLinkRequested`) → `orchestrator.queue_notification()`.
 2. **Queue**: Orchestrator checks idempotency (Redis), persists notification (Postgres), publishes dispatch task (RabbitMQ `noti.dispatch`).
 3. **Dispatch**: RabbitMQ consumer picks up task → `orchestrator.dispatch()` renders template (Tera), selects provider by channel, sends.
 4. **Retry**: Failed deliveries nacked to RabbitMQ DLX with TTL-based exponential backoff (max 5 retries).

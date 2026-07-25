@@ -1,0 +1,9 @@
+SECURITY ALERT: New Sign-In Location
+
+Your GridTokenX account ({{ username }}) was signed in from an IP address
+we have not seen on this account before.
+
+IP Address: {{ ip_address }}
+
+If this was you, no action is needed. If it was not, reset your password
+immediately and review your linked wallets.
