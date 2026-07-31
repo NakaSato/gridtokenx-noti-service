@@ -142,7 +142,16 @@ struct ErcIssued {
     recipient_email: Option<String>,
     #[serde(default)]
     energy_amount: Value,
+    /// Unit `energy_amount` is denominated in. Producers that measure in kWh
+    /// (the on-chain `issue_erc` convention) must send it, or the certificate
+    /// email mislabels the figure by 1000x. Absent → `DEFAULT_ENERGY_UNIT`.
+    #[serde(default, alias = "unit")]
+    energy_unit: Option<String>,
 }
+
+/// Unit assumed when an `ErcIssued` payload carries no `energy_unit`. Matches
+/// the REC denomination (1 certificate token = 1 `MWh`) the template shipped with.
+const DEFAULT_ENERGY_UNIT: &str = "MWh";
 
 #[derive(Debug, Deserialize)]
 struct VppDispatched {
@@ -620,13 +629,20 @@ async fn erc_issued(
         return Ok(());
     }
 
+    let unit = p
+        .energy_unit
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_ENERGY_UNIT);
+
     orchestrator
         .queue_notification(
             parse_uuid(p.user_id.as_deref()),
             NotificationChannel::Email,
             email,
             "erc_issued.html.tera".to_string(),
-            serde_json::json!({ "amount": p.energy_amount }),
+            serde_json::json!({ "amount": p.energy_amount, "unit": unit }),
             Some(ctx.idem("erc")),
         )
         .await
@@ -2221,6 +2237,57 @@ mod tests {
         assert_eq!(n.recipient, "rec@example.com");
         assert_eq!(n.template_id, "erc_issued.html.tera");
         assert_eq!(n.variables["amount"], 1234);
+        // No `energy_unit` on the payload → the REC default, not a blank label.
+        assert_eq!(n.variables["unit"], "MWh");
+    }
+
+    #[tokio::test]
+    async fn erc_issued_honours_producer_energy_unit() {
+        let (orch, sink) = test_orchestrator();
+        // A kWh-denominated producer (the on-chain `issue_erc` convention) must
+        // not have its figure relabelled as MWh — a 1000x misstatement.
+        let data = serde_json::json!({
+            "email": "kwh@example.com",
+            "energy_amount": 1234,
+            "energy_unit": "kWh"
+        });
+
+        dispatch(&orch, None, &ctx(), "ErcIssued", data)
+            .await
+            .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued[0].variables["unit"], "kWh");
+    }
+
+    #[tokio::test]
+    async fn erc_issued_unit_alias_and_blank_fall_back() {
+        let (orch, sink) = test_orchestrator();
+        // `unit` is accepted as an alias for `energy_unit`...
+        dispatch(
+            &orch,
+            None,
+            &ctx(),
+            "ErcIssued",
+            serde_json::json!({ "email": "a@example.com", "energy_amount": 1, "unit": " kWh " }),
+        )
+        .await
+        .expect("dispatch ok");
+        // ...and a whitespace-only unit degrades to the default rather than
+        // rendering a bare number with no unit at all.
+        dispatch(
+            &orch,
+            None,
+            &ctx(),
+            "ErcIssued",
+            serde_json::json!({ "email": "b@example.com", "energy_amount": 2, "unit": "   " }),
+        )
+        .await
+        .expect("dispatch ok");
+
+        let queued = sink.lock().expect("lock");
+        assert_eq!(queued[0].variables["unit"], "kWh");
+        assert_eq!(queued[1].variables["unit"], "MWh");
     }
 
     #[tokio::test]

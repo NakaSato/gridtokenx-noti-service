@@ -98,11 +98,13 @@ noti-server     →  noti-core, noti-protocol, noti-persistence, noti-logic, not
 
 | Event Type | Channel | Template | Variables |
 |:---|:---|:---|:---|
-| `UserRegistered` | Email | `welcome.html.tera` | `name` |
+| `UserRegistered` | — | *(none)* | Explicit no-op (`consumers/events.rs:385`): the welcome mail waits for `EmailVerified`, so an unverified address is never mailed twice. |
+| `EmailVerified` | Email | `welcome.html.tera` | `name`, `dashboard_url` |
+| `VppDispatched` | WebSocket | `vpp_dispatched.txt.tera` | `cluster_id`, `target_kw`, `members_count` (recipient: `admin_user_id` ?? `user_id`) |
 | `OrderMatched` | WebSocket **+ Push** | `trade_matched.txt.tera` (+ `push_notification.txt.tera`) | `role`, `amount`, `price` |
 | `SettlementProcessed` | WebSocket **+ Push** | `settlement_processed.txt.tera` (+ `push_notification.txt.tera`) | `role`, `status`, `tx_signature`, `amount`, `price` (per party with a UUID) |
 | `PriceAlertTriggered` | WebSocket **+ Push** | `price_alert_triggered.txt.tera` (+ `push_notification.txt.tera`) | `condition`, `target_price`, `triggered_price` |
-| `ErcIssued` | Email | `erc_issued.html.tera` | `amount` |
+| `ErcIssued` | Email | `erc_issued.html.tera` | `amount`, `unit` (from payload `energy_unit`/`unit`; defaults to `MWh`) |
 | `PasswordResetRequested` | Email | `password_reset.html.tera` | `reset_url` |
 | `VerificationEmailRequested` | Email | `verify_email.html.tera` | `name`, `verification_url` |
 | `UserOnboarded` | WebSocket | `user_onboarded.txt.tera` | `user_account_pda`, `transaction_signature` |
@@ -130,6 +132,25 @@ noti-server     →  noti-core, noti-protocol, noti-persistence, noti-logic, not
 > **`WalletLinkRequested` has no producer yet** — the event name is defined by this service's handler (pre-link ownership confirmation); IAM must emit it and the frontend must serve `/wallet/confirm` before the flow is live.
 
 > **Push channel:** the `WebSocket + Push` events also fan an FCM push out to the user's registered devices. The Push recipient is the `user_id`; `push_notification.txt.tera` renders a `{title, body}` JSON envelope (built in the handler) that `FcmProvider` parses. Independent idempotency keys (`…:push:…`) keep the two channels decoupled under redelivery.
+
+### Delivery Targets (email · web · mobile)
+
+The channel enum is transport; what a product decision actually picks is the
+**surface** a user sees it on. Three are live, and they are not alternatives —
+the security- and money-relevant events deliberately land on two at once.
+
+| Target | Channel | Events | Rule |
+|:---|:---|:---|:---|
+| 📧 **Email** | `Email` (SMTP / lettre) | `EmailVerified`, `VerificationEmailRequested`, `PasswordResetRequested`, `WalletLinkRequested`, `ErcIssued`, `AccountLocked` | Account lifecycle and anything carrying a **callback link**. No trading event is emailed — a fill is stale by the time an inbox is checked. |
+| 🌐 **Web (in-app)** | `WebSocket` (`/ws`) | `OrderCreated`, `OrderUpdate`, `OrderMatched`, `SettlementProcessed`, `PriceAlertTriggered`, `VppDispatched`, `UserOnboarded`, `MeterRegistered`/`MeterUpdated`, `MeterOnboarded`, `UserWalletLinked`/`Unlinked`/`PrimaryChanged`, `UserLoggedIn` | Everything with a resolvable `user_id`. Best-effort: a disconnected user's frame is dropped, not retried — the REST list is the durable read. |
+| 📱 **Mobile** | `Push` (FCM) | `OrderMatched`, `SettlementProcessed`, `PriceAlertTriggered`, `OrderUpdate` (terminal only), `UserWalletLinked`/`Unlinked`/`PrimaryChanged`, `UserLoggedIn` | A strict subset of the web set: only what is worth a buzz **off-session** — money moved, a price target hit, or a security-relevant account change. |
+
+Boundaries worth knowing before adding an event:
+
+- **Web + mobile is the pattern, not a choice between them.** The 8 push events queue *both* a WebSocket and a Push notification with independent idempotency keys (`…:ws` / `…:push`) — WS for an open session, FCM for a closed one. Both rows persist, so both appear in the notification list.
+- **"Push" is not mobile-only.** `DevicePlatform` is `android | ios | web` (`crates/noti-core/src/domain.rs:32`), so a browser FCM token receives the same pushes. Nothing registers one from the trading web app today, which is why the mobile target is effectively phone-only in practice.
+- **Email is the fallback for events with no user id.** `AccountLocked` arrives keyed on a login identifier, so it can only ever be email — and only when that identifier is an address.
+- **`Sms` and `Webhook` are wired but unrouted.** Both have provider slots and a channel variant; no event maps to them. Treat them as capacity, not as targets.
 
 ### URL Rewriting
 
@@ -176,6 +197,30 @@ noti-core (WebSocketRegistryTrait)
     ↑ implements              ↑ depends on
 noti-api (ConnectionManager)  noti-persistence (WebSocketProvider)
 ```
+
+#### Client wire shape (`noti_core::wire::NotificationView`)
+
+A stored `Notification` names a template and its variables — it has no title,
+no body, and no event name, which is everything a UI needs. `NotificationView`
+is the projection that adds them, and **both client transports emit it**, so a
+browser parses one shape regardless of how the notification arrived:
+
+- the WebSocket frame (`crates/noti-logic/src/orchestrator/dispatch.rs:59`, WebSocket channel only — every other channel keeps its rendered body verbatim, since an email body *is* the email),
+- each row of `GET /api/v1/noti` (`crates/noti-logic/src/orchestrator/query.rs:45`).
+
+```jsonc
+{
+  // …all stored Notification fields (channel, status, template_id, variables, …)
+  "type": "OrderMatched",      // canonical event name, what clients branch on
+  "title": "Trade Matched",
+  "message": "You have a new trade match.\n\nRole: buyer",
+  "is_read": false
+}
+```
+
+- `type` is the **upstream event**, not the template: `trade_matched` renders an `OrderMatched`, and `SecurityAlert` covers all three wallet events (`variables.headline` distinguishes them). Mapping in `noti_core::wire::event_type`.
+- `title`/`message` come from explicit `title`/`headline`/`body` variables first (the push template renders FCM's `{title, body}` JSON, which must never reach a list row), then the `heading` + `-----` underline convention, then the humanized template stem.
+- The REST list renders each row through its **text** template (`wire::text_template_id`), so an email row lists as prose instead of a full HTML document. `bin/noti-server/tests/template_coverage.rs` fails if a routed template has no listable `.txt.tera` body.
 
 ### 3. Sync Core, Async Edges
 

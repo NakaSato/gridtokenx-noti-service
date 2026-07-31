@@ -52,7 +52,7 @@
                     <tr>
                         <td>
                             <p class="amount">{{ amount }}</p>
-                            <p class="unit">MWh</p>
+                            <p class="unit">{{ unit | default(value="MWh") }}</p>
                             <p class="label">Energy Certified</p>
                         </td>
                     </tr>

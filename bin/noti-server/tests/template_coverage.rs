@@ -286,3 +286,49 @@ async fn every_routed_template_renders_with_handler_variables() {
          a handler was added/removed/re-pointed without updating this guard"
     );
 }
+
+/// The notification list projects every row through its **text** template
+/// (`noti_core::wire::text_template_id`) so an email row lists as prose instead
+/// of a full HTML document. An email template shipped without a `.txt.tera`
+/// sibling still lists — with an empty body — which reads to the user as a
+/// blank row. Fail here instead.
+#[tokio::test]
+async fn every_routed_template_has_a_listable_text_body() {
+    let (orch, sink) = recording_orchestrator();
+    let ctx = MsgCtx {
+        partition: 0,
+        offset: 1,
+        event_id: None,
+    };
+
+    for (event_type, frontend, data) in event_cases() {
+        dispatch(&orch, frontend, &ctx, event_type, data)
+            .await
+            .unwrap_or_else(|e| panic!("dispatch '{event_type}' failed: {e}"));
+    }
+
+    let queued = sink.lock().expect("sink lock");
+    let engine = template_engine();
+
+    for n in queued.iter() {
+        let text_id = noti_core::wire::text_template_id(&n.template_id);
+        let out = engine.render(&text_id, &n.variables).unwrap_or_else(|e| {
+            panic!(
+                "'{}' has no listable text template ('{text_id}' failed to render): {e}",
+                n.template_id
+            )
+        });
+
+        let (title, message) = noti_core::wire::title_and_message(&text_id, &n.variables, &out);
+        assert!(
+            !title.is_empty(),
+            "'{}' projects an empty list title",
+            n.template_id
+        );
+        assert!(
+            !message.trim().is_empty(),
+            "'{}' projects an empty list body",
+            n.template_id
+        );
+    }
+}

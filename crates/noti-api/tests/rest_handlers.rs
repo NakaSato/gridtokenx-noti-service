@@ -226,6 +226,38 @@ async fn list_returns_notifications_and_unread_count() {
     assert_eq!(body["notifications"].as_array().unwrap().len(), 2);
 }
 
+/// The list is what the notification bell renders, so each row must carry the
+/// display fields — the stored record alone has no title, body, or read flag.
+#[tokio::test]
+async fn list_projects_rows_to_the_client_wire_shape() {
+    let user = Uuid::new_v4();
+    let mut read_row = sample(user);
+    read_row.read_at = Some(Utc::now());
+
+    let repo = Arc::new(FakeRepo::new(vec![sample(user), read_row], 1));
+    let (status, body) = send(repo, get_list(Some("admin"), Some(user), "")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let row = &body["notifications"][0];
+
+    assert_eq!(
+        row["type"], "EmailVerified",
+        "rows carry the canonical event type, not the template name"
+    );
+    assert_eq!(row["title"], "Welcome", "no heading → humanized template stem");
+    assert_eq!(row["message"], "body", "rendered text lands in `message`");
+    assert_eq!(row["is_read"], serde_json::json!(false));
+    assert_eq!(
+        body["notifications"][1]["is_read"],
+        serde_json::json!(true),
+        "`is_read` mirrors `read_at`"
+    );
+    // The stored record is flattened in alongside the projection, so existing
+    // consumers of the raw row keep working.
+    assert_eq!(row["template_id"], "welcome");
+    assert_eq!(row["channel"], "Email");
+}
+
 #[tokio::test]
 async fn list_clamps_limit_to_100() {
     // 150 rows available, limit=999 must clamp to 100 (the handler's ceiling).

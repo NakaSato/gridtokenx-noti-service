@@ -194,7 +194,8 @@ docker run --rm -p 8080:8080 -p 8090:8090 --env-file .env \
 
 | Event | Channel | Template | Description |
 |:---|:---|:---|:---|
-| `UserRegistered` | Email | `welcome.html.tera` | Welcome email with feature list |
+| `UserRegistered` | — | *(none)* | Handled as a no-op — the welcome mail is sent on `EmailVerified` instead |
+| `EmailVerified` | Email | `welcome.html.tera` | Welcome email with feature list, sent once the address is verified |
 | `OrderMatched` | WebSocket + Push | `trade_matched.txt.tera`, `push_notification.txt.tera` | Trade match alert to buyer and seller — WebSocket (live) + FCM push (mobile/web) |
 | `SettlementProcessed` | WebSocket + Push | `settlement_processed.txt.tera`, `push_notification.txt.tera` | Settlement status to buyer and seller (when party UUIDs present) |
 | `ErcIssued` | Email | `erc_issued.html.tera` | Renewable Energy Certificate issuance |

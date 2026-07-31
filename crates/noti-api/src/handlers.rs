@@ -82,7 +82,9 @@ pub struct ListNotificationsParams {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ListNotificationsResponse {
-    pub notifications: Vec<noti_core::domain::Notification>,
+    /// Rows in the client wire shape (`noti_core::wire::NotificationView`):
+    /// the stored record plus `type`, `title`, `message`, and `is_read`.
+    pub notifications: Vec<noti_core::wire::NotificationView>,
     pub unread_count: i64,
     pub total: usize,
 }
@@ -118,7 +120,7 @@ pub async fn list_notifications(
 
     let notifications = state
         .orchestrator
-        .list_user_notifications(user.user_id, limit, offset)
+        .list_user_notification_views(user.user_id, limit, offset)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 

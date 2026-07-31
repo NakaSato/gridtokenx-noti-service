@@ -2,6 +2,6 @@ Renewable Energy Certificate Issued
 -----------------------------------
 Your contribution to the green grid has been recorded.
 
-Amount: {{ amount }} MWh
+Amount: {{ amount }} {{ unit | default(value="MWh") }}
 
 This certificate is verifiable on the Solana blockchain.

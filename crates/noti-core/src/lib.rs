@@ -9,6 +9,7 @@ pub mod domain;
 pub mod error;
 pub mod health;
 pub mod traits;
+pub mod wire;
 
 pub use error::{NotiError, Result};
 pub use traits::*;

@@ -1,73 +1,83 @@
-{% extends "base.html.tera" %}
-{% import "_components.html.tera" as ui %}
+<!DOCTYPE html>
+<html lang="en" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+{# SmtpProvider derives the Subject from <title> (providers/smtp.rs:223). This
+   template is standalone rather than `extends base.html.tera`: it follows the
+   "modernist" Claude Design system (flat 2px rules, #ec3013 accent, Arial),
+   which shares no blocks with base's purple/TikTok-Sans layout. #}
+<title>Verify your email — GridTokenX</title>
+<!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->
+<style>
+  @media only screen and (max-width:620px){
+    .wrap{width:100% !important}
+    .pad{padding-left:24px !important;padding-right:24px !important}
+    .h1{font-size:34px !important;line-height:38px !important}
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background:#f3f2f2;">
+<span style="display:none!important;visibility:hidden;opacity:0;height:0;width:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f3f2f2;">Confirm this address to activate your GridTokenX account — one click, then you're signed in.</span>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f3f2f2;">
+<tr><td align="center" style="padding:32px 12px;">
 
-{% block subject %}Confirm your email to activate your GridTokenX account{% endblock subject %}
-{% block preheader %}One click to verify your email and activate your GridTokenX account.{% endblock preheader %}
-{% block title %}Verify Your Email{% endblock title %}
-{% block subtitle %}Confirm your email address to activate your account{% endblock subtitle %}
+<table role="presentation" class="wrap" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;background:#ffffff;border:2px solid #201e1d;">
 
-{% block extra_styles %}
-        .verify-card {
-            background-color: #f4f2fe;
-            border: 1px solid #e5ddff;
-            border-radius: 8px;
-        }
-        .verify-card td {
-            padding: 28px;
-            text-align: center;
-        }
-        .verify-card .badge {
-            width: 56px;
-            height: 56px;
-            margin: 0 auto 16px;
-            background-color: #e5ddff;
-            color: #7b63f1;
-            border-radius: 50%;
-            font-size: 26px;
-            font-weight: 700;
-            line-height: 56px;
-            text-align: center;
-        }
-        .verify-card p {
-            margin: 0 0 20px;
-            font-size: 15px;
-            color: #333333;
-        }
-{% endblock extra_styles %}
+  <!-- masthead -->
+  <tr><td class="pad" style="padding:16px 40px;border-bottom:2px solid #201e1d;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+      <td width="28" height="28" align="center" valign="middle" bgcolor="#ec3013" style="width:28px;height:28px;background:#ec3013;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:28px;mso-line-height-rule:exactly;font-weight:bold;letter-spacing:0.5px;color:#ffffff;text-align:center;">GX</td>
+      <td style="padding-left:12px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:1.6px;text-transform:uppercase;color:#201e1d;font-weight:bold;">GridToken<span style="color:#ec3013;">X</span><span style="color:#8a8785;font-weight:normal;letter-spacing:1.4px;">&nbsp;&nbsp;/&nbsp;&nbsp;Account verification</span></td>
+    </tr></table>
+  </td></tr>
 
-{% block content %}
-                <p>Hello{% if name %} <strong>{{ name }}</strong>{% endif %},</p>
-                <p>
-                    Thanks for signing up for <strong>GridTokenX</strong> — the peer-to-peer
-                    energy trading platform. One last step: confirm this email address to
-                    activate your account.
-                </p>
+  <!-- title -->
+  <tr><td class="pad" style="padding:44px 40px 40px 40px;border-bottom:2px solid #201e1d;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+      <tr><td class="h1" style="font-family:Arial,Helvetica,sans-serif;font-size:44px;line-height:46px;mso-line-height-rule:exactly;font-weight:bold;letter-spacing:-1.2px;color:#201e1d;">
+        Verify your account
+      </td></tr>
+      <tr><td height="18" style="height:18px;line-height:18px;font-size:0;">&nbsp;</td></tr>
+      <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:24px;mso-line-height-rule:exactly;color:#514e4c;">
+        {# `name` is the producer's `username` (consumers/events.rs:825) and may be
+           an empty string, which the `default` filter would not catch. #}
+        Hello <strong style="color:#201e1d;">{% if name %}{{ name }}{% else %}there{% endif %}</strong> — thanks for signing up for GridTokenX, the peer-to-peer energy trading platform. One last step: confirm this address to activate your account.
+      </td></tr>
+    </table>
+  </td></tr>
 
-                <table role="presentation" class="verify-card" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f4f2fe" style="margin-bottom: 28px;">
-                    <tr>
-                        <td>
-                            <div class="badge">&#10003;</div>
-                            <p>Click below to verify your email. You'll be signed in automatically.</p>
-                            <a href="{{ verification_url }}" class="btn" style="background-color: #7b63f1; background: linear-gradient(135deg, #7b63f1 0%, #a899f4 100%); padding: 16px 40px; font-size: 17px;">Verify My Email</a>
-                        </td>
-                    </tr>
-                </table>
+  <!-- action -->
+  <tr><td class="pad" style="padding:36px 40px;border-bottom:2px solid #201e1d;background:#ffffff;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+      <tr><td bgcolor="#ec3013" style="background:#ec3013;border-radius:0;">
+        <a href="{{ verification_url }}" style="display:block;padding:16px 34px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:18px;mso-line-height-rule:exactly;font-weight:bold;letter-spacing:0.6px;text-transform:uppercase;color:#ffffff;text-decoration:none;">Verify my email</a>
+      </td></tr>
+      <tr><td height="14" style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
+      <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;mso-line-height-rule:exactly;color:#77736f;">
+        You'll be signed in automatically. This link expires in 24&nbsp;hours.
+      </td></tr>
+    </table>
+  </td></tr>
 
-                <p class="section-label">What happens next</p>
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 24px;">
-                    {{ ui::list_row(icon="1", text="Your account is activated instantly.") }}
-                    {{ ui::list_row(icon="2", text="Link your Solana wallet for transactions.") }}
-                    {{ ui::list_row(icon="3", text="Start trading renewable energy tokens (GRX).") }}
-                </table>
+  <!-- fallback link -->
+  <tr><td class="pad" style="padding:28px 40px;background:#f3f2f2;border-bottom:2px solid #201e1d;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:20px;mso-line-height-rule:exactly;color:#77736f;">
+    Button not working? Paste this link into your browser:<br>
+    <a href="{{ verification_url }}" style="color:#b8250f;text-decoration:underline;word-break:break-all;">{{ verification_url }}</a>
+  </td></tr>
 
-                <div class="divider" style="margin: 24px 0;">&nbsp;</div>
-                {{ ui::link_fallback(url=verification_url) }}
+  <!-- footer -->
+  <tr><td class="pad" style="padding:28px 40px 32px 40px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:19px;mso-line-height-rule:exactly;color:#8a8785;">
+    You're receiving this because this address was used to register a GridTokenX account. If that wasn't you, ignore this email — the account stays inactive and no one can sign in with it.<br><br>
+    &copy; 2026 GridTokenX &middot; 1 Market Street, Suite 400, San Francisco, CA 94105<br>
+    Automated message &mdash; please do not reply.
+  </td></tr>
 
-                <div class="box box-warn" style="margin-top: 24px;">
-                    <p>
-                        You're receiving this because this address was used to register a
-                        GridTokenX account. If that wasn't you, ignore this email — the account
-                        stays inactive and no one can sign in with it.
-                    </p>
-                </div>
-{% endblock content %}
+</table>
+
+</td></tr>
+</table>
+</body>
+</html>

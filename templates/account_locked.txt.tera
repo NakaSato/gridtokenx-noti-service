@@ -1,0 +1,8 @@
+Account Temporarily Locked
+--------------------------
+Your GridTokenX account ({{ identifier }}) has been locked after too many
+failed sign-in attempts.
+
+You can try again in {{ lockout_minutes }} minute(s).
+
+If this was not you, reset your password as soon as the lock expires.

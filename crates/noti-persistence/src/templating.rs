@@ -71,6 +71,9 @@ mod tests {
                 "trade_matched.txt.tera",
                 json!({ "role": "buyer", "amount": "10.5", "price": "2.30" }),
             ),
+            ("erc_issued.html.tera", json!({ "amount": "100", "unit": "MWh" })),
+            // No `unit` key: exercises the template's `default` filter, the path
+            // taken by anything queuing this template outside the Kafka handler.
             ("erc_issued.html.tera", json!({ "amount": "100" })),
             (
                 "vpp_dispatched.txt.tera",
@@ -83,6 +86,12 @@ mod tests {
             (
                 "verify_email.html.tera",
                 json!({ "name": "Bob", "verification_url": "https://app.example/verify?token=xyz" }),
+            ),
+            // IAM sends `username` as a `#[serde(default)]` String, so an empty
+            // name is reachable — the greeting must degrade to "Hello there".
+            (
+                "verify_email.html.tera",
+                json!({ "name": "", "verification_url": "https://app.example/verify?token=xyz" }),
             ),
             (
                 "user_onboarded.txt.tera",
@@ -156,13 +165,55 @@ mod tests {
         ]
     }
 
+    /// Templates that ship but no consumer routes to yet, plus the variable
+    /// shapes their fallback branches exist for.
+    fn unrouted_template_cases() -> Vec<(&'static str, serde_json::Value)> {
+        vec![
+            // The HTML security-alert email. Not routed from `consumers/events.rs`:
+            // `UserLoggedIn` carries no recipient address (iam-core
+            // `domain/identity/events.rs:70` sends user_id/username/ip_address
+            // only), so the login handler stays WebSocket + Push. Covered here so
+            // the markup and its `<title>` subject stay verified regardless.
+            (
+                "new_login.html.tera",
+                json!({
+                    "username": "dave",
+                    "timestamp": "28 Jul 2026, 14:02 UTC+7",
+                    "device": "Chrome 128 · macOS",
+                    "location": "Bangkok, Thailand (approx.)",
+                    "ip_address": "203.0.113.7",
+                    "security_url": "https://app.example/security/sessions"
+                }),
+            ),
+            // Bare payload: every field takes its fallback branch rather than
+            // erroring on an undefined variable.
+            ("new_login.html.tera", json!({})),
+            // Empty strings are reachable wherever a producer field is
+            // `#[serde(default)]`, and must take the same fallback branch.
+            (
+                "new_login.html.tera",
+                json!({
+                    "username": "",
+                    "timestamp": "",
+                    "device": "",
+                    "location": "",
+                    "ip_address": "",
+                    "security_url": ""
+                }),
+            ),
+        ]
+    }
+
     /// Render every routed template. Guards against a template referencing a
     /// variable the producer never supplies.
     #[test]
     fn all_routed_templates_render() {
         let e = engine();
 
-        for (name, vars) in routed_template_cases() {
+        for (name, vars) in routed_template_cases()
+            .into_iter()
+            .chain(unrouted_template_cases())
+        {
             let out = e
                 .render(name, &vars)
                 .unwrap_or_else(|err| panic!("render '{name}' failed: {err}"));

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+{# SmtpProvider derives the Subject from <title> (providers/smtp.rs:223). This
+   template is standalone rather than `extends base.html.tera`: it follows the
+   "modernist" Claude Design system (flat 2px rules, #ec3013 accent, Arial),
+   which shares no blocks with base's purple/TikTok-Sans layout. #}
+<title>New sign-in to your GridTokenX account</title>
+<!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->
+<style>
+  @media only screen and (max-width:620px){
+    .wrap{width:100% !important}
+    .pad{padding-left:24px !important;padding-right:24px !important}
+    .h1{font-size:34px !important;line-height:38px !important}
+    .lbl{display:block !important;width:100% !important;padding-bottom:0 !important}
+    .val{display:block !important;width:100% !important;padding-top:2px !important}
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background:#f3f2f2;">
+<span style="display:none!important;visibility:hidden;opacity:0;height:0;width:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f3f2f2;">A new sign-in from {% if device %}{{ device }}{% else %}an unrecognised device{% endif %}. If this wasn't you, secure your account now.</span>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f3f2f2;">
+<tr><td align="center" style="padding:32px 12px;">
+
+<table role="presentation" class="wrap" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;background:#ffffff;border:2px solid #201e1d;">
+
+  <!-- masthead -->
+  <tr><td class="pad" style="padding:16px 40px;border-bottom:2px solid #201e1d;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+      <td width="28" height="28" align="center" valign="middle" bgcolor="#ec3013" style="width:28px;height:28px;background:#ec3013;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:28px;mso-line-height-rule:exactly;font-weight:bold;letter-spacing:0.5px;color:#ffffff;text-align:center;">GX</td>
+      <td style="padding-left:12px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:1.6px;text-transform:uppercase;color:#201e1d;font-weight:bold;">GridToken<span style="color:#ec3013;">X</span><span style="color:#8a8785;font-weight:normal;letter-spacing:1.4px;">&nbsp;&nbsp;/&nbsp;&nbsp;Security alert</span></td>
+    </tr></table>
+  </td></tr>
+
+  <!-- title -->
+  <tr><td class="pad" style="padding:44px 40px 36px 40px;border-bottom:2px solid #201e1d;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+      <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:1.6px;text-transform:uppercase;font-weight:bold;color:#ec3013;padding-bottom:16px;">New sign-in detected</td></tr>
+      <tr><td class="h1" style="font-family:Arial,Helvetica,sans-serif;font-size:40px;line-height:44px;mso-line-height-rule:exactly;font-weight:bold;letter-spacing:-1.2px;color:#201e1d;">Was this you?</td></tr>
+      <tr><td height="16" style="height:16px;line-height:16px;font-size:0;">&nbsp;</td></tr>
+      <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:24px;mso-line-height-rule:exactly;color:#514e4c;">
+        {# Guarded with `{% if %}` rather than `| default(...)`: the producer's
+           fields are `#[serde(default)]` Strings, so "" is reachable and the
+           `default` filter only fires on *undefined*. #}
+        Hello <strong style="color:#201e1d;">{% if username %}{{ username }}{% else %}there{% endif %}</strong> &mdash; your GridTokenX account was just signed in to from a device we haven't seen before. Details below.
+      </td></tr>
+    </table>
+  </td></tr>
+
+  <!-- sign-in details -->
+  <tr><td class="pad" style="padding:0 40px;border-bottom:2px solid #201e1d;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:32px 0;border-top:2px solid #201e1d;border-bottom:2px solid #201e1d;">
+      <tr>
+        <td class="lbl" width="150" valign="top" style="width:150px;padding:14px 16px 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:16px;mso-line-height-rule:exactly;letter-spacing:1.4px;text-transform:uppercase;color:#8a8785;">Time</td>
+        <td class="val" valign="top" style="padding:14px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;mso-line-height-rule:exactly;font-weight:bold;color:#201e1d;">{% if timestamp %}{{ timestamp }}{% else %}&mdash;{% endif %}</td>
+      </tr>
+      <tr>
+        <td class="lbl" width="150" valign="top" style="width:150px;padding:14px 16px 14px 0;border-top:1px solid #d8d6d4;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:16px;mso-line-height-rule:exactly;letter-spacing:1.4px;text-transform:uppercase;color:#8a8785;">Device</td>
+        <td class="val" valign="top" style="padding:14px 0;border-top:1px solid #d8d6d4;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;mso-line-height-rule:exactly;font-weight:bold;color:#201e1d;">{% if device %}{{ device }}{% else %}Unknown device{% endif %}</td>
+      </tr>
+      <tr>
+        <td class="lbl" width="150" valign="top" style="width:150px;padding:14px 16px 14px 0;border-top:1px solid #d8d6d4;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:16px;mso-line-height-rule:exactly;letter-spacing:1.4px;text-transform:uppercase;color:#8a8785;">Location</td>
+        <td class="val" valign="top" style="padding:14px 0;border-top:1px solid #d8d6d4;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;mso-line-height-rule:exactly;font-weight:bold;color:#201e1d;">{% if location %}{{ location }}{% else %}Approximate location unavailable{% endif %}</td>
+      </tr>
+      <tr>
+        <td class="lbl" width="150" valign="top" style="width:150px;padding:14px 16px 14px 0;border-top:1px solid #d8d6d4;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:16px;mso-line-height-rule:exactly;letter-spacing:1.4px;text-transform:uppercase;color:#8a8785;">IP address</td>
+        <td class="val" valign="top" style="padding:14px 0;border-top:1px solid #d8d6d4;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;mso-line-height-rule:exactly;font-weight:bold;color:#201e1d;">{% if ip_address %}{{ ip_address }}{% else %}&mdash;{% endif %}</td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <!-- recognise it -->
+  <tr><td class="pad" style="padding:28px 40px;background:#f3f2f2;border-bottom:2px solid #201e1d;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;mso-line-height-rule:exactly;color:#201e1d;">
+    <strong>Recognise this sign-in?</strong> No action needed &mdash; you can ignore this email.
+  </td></tr>
+
+  <!-- action -->
+  <tr><td class="pad" style="padding:36px 40px;border-bottom:2px solid #201e1d;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+      <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:14px;mso-line-height-rule:exactly;letter-spacing:1.6px;text-transform:uppercase;font-weight:bold;color:#ec3013;padding-bottom:16px;">Wasn't you?</td></tr>
+      <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:22px;mso-line-height-rule:exactly;color:#514e4c;padding-bottom:22px;">
+        Secure the account immediately: reset your password, then review connected wallets and active sessions.
+      </td></tr>
+      <tr><td>
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+          {# The design mock hardcodes `localhost:11001`; the Trading UI actually
+             serves at the FRONTEND_URL origin (.env.example:51). Prefer the
+             producer-supplied link and fall back to that origin. The fallback is
+             an `{% if %}` branch, not `| default(...)`: autoescaping mangles a
+             filter's literal URL into `http:&amp;#x2F;&amp;#x2F;…`. #}
+          <tr><td bgcolor="#ec3013" style="background:#ec3013;border-radius:0;">
+            <a href="{% if security_url %}{{ security_url }}{% else %}http://trading.gridtokenx-coresystem.orb.local/security/sessions{% endif %}" style="display:block;padding:16px 34px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:18px;mso-line-height-rule:exactly;font-weight:bold;letter-spacing:0.6px;text-transform:uppercase;color:#ffffff;text-decoration:none;">Secure my account</a>
+          </td></tr>
+        </table>
+      </td></tr>
+      <tr><td height="14" style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
+      <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;mso-line-height-rule:exactly;color:#77736f;">
+        GridTokenX will never ask for your seed phrase or private keys by email.
+      </td></tr>
+    </table>
+  </td></tr>
+
+  <!-- footer -->
+  <tr><td class="pad" style="padding:28px 40px 32px 40px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:19px;mso-line-height-rule:exactly;color:#8a8785;">
+    Security alerts are always sent and can't be turned off.<br><br>
+    &copy; 2026 GridTokenX &middot; 1 Market Street, Suite 400, San Francisco, CA 94105<br>
+    Automated message &mdash; please do not reply.
+  </td></tr>
+
+</table>
+
+</td></tr>
+</table>
+</body>
+</html>

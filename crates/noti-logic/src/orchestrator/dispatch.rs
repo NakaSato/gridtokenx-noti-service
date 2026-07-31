@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use noti_core::domain::{NotificationChannel, NotificationStatus};
 use noti_core::error::{NotiError, Result};
+use noti_core::wire::NotificationView;
 
 use super::NotificationOrchestrator;
 
@@ -53,6 +54,20 @@ impl NotificationOrchestrator {
                     .await?;
                 return Err(e);
             }
+        };
+
+        // 2b. WebSocket clients get the structured `NotificationView` envelope —
+        // the same JSON the REST list returns, so a browser parses one shape on
+        // both transports. Raw rendered text carries no event type and no id,
+        // leaving a client nothing to branch on. Every other channel keeps the
+        // rendered body verbatim: an email body is the email.
+        let content = if matches!(notification.channel, NotificationChannel::WebSocket) {
+            let view = NotificationView::new(notification.clone(), &content);
+            serde_json::to_string(&view).map_err(|e| {
+                NotiError::Internal(format!("failed to encode WebSocket payload: {e}"))
+            })?
+        } else {
+            content
         };
 
         // 3. Select provider by channel

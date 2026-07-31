@@ -52,7 +52,10 @@ const SECRET: &str = "test-ws-flow-secret-please-ignore";
 const PROBE: &str = "__ready_probe__";
 /// Distinctive rendered body the stub template returns, so the assertion on the
 /// received frame is exact (and unmistakably the dispatch payload, not a probe).
-const RENDERED_BODY: &str = r#"{"title":"Trade matched","amount":42}"#;
+/// Shaped like the real text templates — heading + `---` underline — because
+/// dispatch splits that into the envelope's `title` and `message`.
+const RENDERED_BODY: &str =
+    "Trade Matched\n-------------\nYou have a new trade match.\n\nRole: buyer";
 
 #[derive(Serialize)]
 struct Claims {
@@ -256,10 +259,25 @@ async fn dispatch_pushes_rendered_notification_to_connected_client() {
     .await
     .expect("rendered notification never reached the client");
 
+    // The frame is the `NotificationView` envelope, not the bare rendered text:
+    // a browser client branches on `type` and renders `title`/`message`.
+    let envelope: serde_json::Value =
+        serde_json::from_str(&body).expect("WS frame is JSON (the NotificationView envelope)");
+
+    assert_eq!(envelope["id"], serde_json::json!(id.to_string()));
     assert_eq!(
-        body, RENDERED_BODY,
-        "client received the rendered dispatch payload over the WS channel"
+        envelope["type"], "OrderMatched",
+        "envelope carries the canonical event type, not the template name"
     );
+    assert_eq!(envelope["title"], "Trade Matched");
+    assert_eq!(
+        envelope["message"], "You have a new trade match.\n\nRole: buyer",
+        "heading is lifted into `title` and stripped from the body"
+    );
+    assert_eq!(envelope["is_read"], serde_json::json!(false));
+    // The stored record is flattened in alongside, so `variables` stays
+    // available for clients that want to render structured data themselves.
+    assert_eq!(envelope["template_id"], "trade_matched");
 
     // Terminal status must be `sent` (written only after the provider returned
     // Ok, i.e. the registry reported delivery). Copy out before the await below

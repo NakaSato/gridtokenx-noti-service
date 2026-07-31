@@ -52,6 +52,7 @@ impl Modify for SecurityAddon {
         handlers::RegisterDeviceRequest,
         handlers::ListDevicesResponse,
         noti_core::domain::Notification,
+        noti_core::wire::NotificationView,
         noti_core::domain::NotificationChannel,
         noti_core::domain::NotificationStatus,
         noti_core::domain::DeviceToken,
